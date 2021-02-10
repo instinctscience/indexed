@@ -5,7 +5,7 @@ Indexed is a tool for managing records in ETS.
 A record is a map with an `:id` key (perhaps an Ecto.Schema struct). An ETS
 table stores all such records of a given entity, keyed by id.
 
-Configure and warm your cache with some data and get an `%Indexed.Index{}` in
+Configure and warm your cache with some data and get an `%Indexed{}` in
 return. Pass this struct into `Indexed` functions to get, update, and paginate
 records.
 
