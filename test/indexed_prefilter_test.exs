@@ -1,27 +1,27 @@
-defmodule Artist do
-  defstruct [:id, :label, :name]
+defmodule Album do
+  defstruct [:id, :label, :media, :artist]
 end
 
 defmodule IndexedPrefilterTest do
   @moduledoc "Test `:prefilter` and `:maintain_unique` options."
   use ExUnit.Case
 
-  @artists [
-    %Artist{id: 1, label: "Liquid V Recordings", name: "Calibre"},
-    %Artist{id: 2, label: "Hospital Records", name: "Logistics"},
-    %Artist{id: 3, label: "Hospital Records", name: "London Elektricity"},
-    %Artist{id: 4, label: "Liquid V Recordings", name: "Roni Size"},
-    %Artist{id: 5, label: "Hospital Records", name: "S.P.Y"}
+  @albums [
+    %Album{id: 1, label: "Liquid V Recordings", media: "Vinyl", artist: "Calibre"},
+    %Album{id: 2, label: "Hospital Records", media: "CD", artist: "Logistics"},
+    %Album{id: 3, label: "Hospital Records", media: "FLAC", artist: "London Elektricity"},
+    %Album{id: 4, label: "Liquid V Recordings", media: "CD", artist: "Roni Size"},
+    %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "S.P.Y"}
   ]
 
   setup do
     [
       index:
         Indexed.warm(
-          artists: [
-            data: {:asc, :name, @artists},
-            fields: [:name],
-            prefilters: [:label]
+          albums: [
+            data: {:asc, :artist, @albums},
+            fields: [:artist],
+            prefilters: [nil: [maintain_unique: [:media]], label: [maintain_unique: [:media]]]
           ]
         )
     ]
@@ -30,9 +30,14 @@ defmodule IndexedPrefilterTest do
   test "basic prefilter", %{index: index} do
     assert %Paginator.Page{
              entries: [
-               %Artist{id: 2, label: "Hospital Records", name: "Logistics"},
-               %Artist{id: 3, label: "Hospital Records", name: "London Elektricity"},
-               %Artist{id: 5, label: "Hospital Records", name: "S.P.Y"}
+               %Album{id: 2, label: "Hospital Records", media: "CD", artist: "Logistics"},
+               %Album{
+                 id: 3,
+                 label: "Hospital Records",
+                 media: "FLAC",
+                 artist: "London Elektricity"
+               },
+               %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "S.P.Y"}
              ],
              metadata: %Paginator.Page.Metadata{
                after: nil,
@@ -42,44 +47,55 @@ defmodule IndexedPrefilterTest do
                total_count_cap_exceeded: false
              }
            } ==
-             Indexed.paginate(index, :artists,
-               order_field: :name,
+             Indexed.paginate(index, :albums,
+               order_field: :artist,
                order_direction: :asc,
                prefilter: {:label, "Hospital Records"}
              )
   end
 
-  test "get_unique", %{index: index} do
+  test "get_unique_values", %{index: index} do
     assert ["Hospital Records", "Liquid V Recordings"] ==
-             Indexed.get_unique(index, :artists, :label)
+             Indexed.get_unique_values(index, :albums, :label)
+
+    assert ~w(CD FLAC Vinyl) ==
+             Indexed.get_unique_values(index, :albums, :media)
+
+    assert ~w(CD FLAC) ==
+             Indexed.get_unique_values(index, :albums, :media, {:label, "Hospital Records"})
   end
 
   describe "looks good after adding a record" do
     setup %{index: index} do
-      artist = %{id: 6, label: "Hospital Records", name: "Bop"}
-      Indexed.set_record(index, :artists, artist)
-      [artist: artist]
+      album = %{id: 6, label: "Hospital Records", media: "Minidisc", artist: "Bop"}
+      Indexed.set_record(index, :albums, album)
+      [album: album]
     end
 
-    test "basic prefilter", %{artist: artist, index: index} do
+    test "basic prefilter", %{album: album, index: index} do
       assert %Paginator.Page{
                entries: [
-                 ^artist,
-                 %Artist{id: 2, label: "Hospital Records", name: "Logistics"},
-                 %Artist{id: 3, label: "Hospital Records", name: "London Elektricity"},
-                 %Artist{id: 5, label: "Hospital Records", name: "S.P.Y"}
+                 ^album,
+                 %Album{id: 2, label: "Hospital Records", media: "CD", artist: "Logistics"},
+                 %Album{
+                   id: 3,
+                   label: "Hospital Records",
+                   media: "FLAC",
+                   artist: "London Elektricity"
+                 },
+                 %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "S.P.Y"}
                ]
              } =
-               Indexed.paginate(index, :artists,
-                 order_field: :name,
+               Indexed.paginate(index, :albums,
+                 order_field: :artist,
                  order_direction: :asc,
                  prefilter: {:label, "Hospital Records"}
                )
     end
 
-    test "get_unique", %{index: index} do
+    test "get_unique_values", %{index: index} do
       assert ["Hospital Records", "Liquid V Recordings"] ==
-               Indexed.get_unique(index, :artists, :label)
+               Indexed.get_unique_values(index, :albums, :label)
     end
   end
 end
