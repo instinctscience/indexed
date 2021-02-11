@@ -17,8 +17,14 @@ defmodule Indexed do
 
   If the field name holds a DateTime, the second element being `:date_time`
   will hint the sorting to use `DateTime.compare/2` as is necessary.
+
+  ## Options
+
+  * `:sort` - Indicates how the field should be sorted in ascending order:
+    * `:date_time` - `DateTime.compare/2` should be used for sorting.
+    * `nil` (default) - `Enum.sort/1` will be used.
   """
-  @type field_config :: {field_name :: atom, :date_time | nil}
+  @type field_config :: {field_name :: atom, opts :: keyword}
 
   @typedoc "Configuration info for a prefilter."
   @type prefilter_config :: {atom, opts :: keyword}
@@ -37,8 +43,6 @@ defmodule Indexed do
 
     @typedoc """
     * `:fields` - List of `t:field/0`s to be indexed for this entity.
-    * `:maintain_unique` - List of field name atoms for which to manage unique
-      values for across all records.
     * `:prefilters` - List of tuples indicating which fields should be
       prefiltered on. This means that separate indexes will be managed for each
       unique value for each of these fields, across all records of this entity
@@ -60,7 +64,7 @@ defmodule Indexed do
     A field to be indexed. 2-element tuple has the field name, followed by a
     sorting strategy, :date or nil for simple sort.
     """
-    @type field :: {atom, :date | nil}
+    @type field :: {atom, keyword}
   end
 
   defstruct entities: %{}, index_ref: nil
@@ -88,7 +92,7 @@ defmodule Indexed do
       sorted by field (atom) and direction (:asc or :desc), `t:data_tuple/0`.
     * `list` - data list with unknown ordering; must be sorted for every field.
   * `:fields` - List of field name atoms to index by. At least one required.
-    * If field is a DateTime, wrap it in a tuple: `{:my_field, :date_time}`.
+    * If field is a DateTime, use sort: `{:my_field, sort: :date_time}`.
     * Ascending and descending will be indexed for each field.
   * `:prefilters` - List of field name atoms which should be prefiltered on.
     This means that separate indexes will be managed for each unique value for
@@ -112,7 +116,7 @@ defmodule Indexed do
     entities =
       Map.new(args, fn {entity_name, opts} ->
         ref = :ets.new(entity_name, @ets_opts)
-        fields = resolve_fields_opt(opts[:fields])
+        fields = resolve_fields_opt(opts[:fields], entity_name)
         prefilters = resolve_prefilters_opt(opts[:prefilters])
 
         {_dir, _field, full_data} =
@@ -137,11 +141,13 @@ defmodule Indexed do
   end
 
   # Normalize fields.
-  @spec resolve_fields_opt([atom | field_config]) :: [field_config]
-  defp resolve_fields_opt(fields) do
-    Enum.map(fields || [], fn
-      {_name, :date_time} = f -> f
-      name when is_atom(name) -> {name, nil}
+  @spec resolve_fields_opt([atom | field_config], atom) :: [field_config]
+  defp resolve_fields_opt(fields, entity_name) do
+    match?([_ | _], fields) || raise "At least one field to index is required on #{entity_name}."
+
+    Enum.map(fields, fn
+      {_name, _opts} = f -> f
+      name when is_atom(name) -> {name, []}
     end)
   end
 
@@ -248,9 +254,9 @@ defmodule Indexed do
   end
 
   # Data direction hint does NOT match this field -- sorting needed.
-  defp warm_index(ref, entity_name, prefilter, {name, sort_hint}, {_, _, data}) do
+  defp warm_index(ref, entity_name, prefilter, {name, opts}, {_, _, data}) do
     sort_fn =
-      case sort_hint do
+      case opts[:sort] do
         :date_time -> &(:lt == DateTime.compare(Map.get(&1, name), Map.get(&2, name)))
         nil -> &(Map.get(&1, name) < Map.get(&2, name))
       end
@@ -422,9 +428,9 @@ defmodule Indexed do
 
   # Add the id of `record` to the list of descending ids, sorting by `field`.
   @spec insert_by([id], record, atom, Entity.field(), t) :: [id]
-  defp insert_by(old_desc_ids, record, entity_name, {name, sort_hint}, index) do
+  defp insert_by(old_desc_ids, record, entity_name, {name, opts}, index) do
     find_fun =
-      case sort_hint do
+      case opts[:sort] do
         :date_time ->
           fn id ->
             val = Map.get(get(index, entity_name, id), name)
