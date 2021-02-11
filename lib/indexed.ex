@@ -74,7 +74,7 @@ defmodule Indexed do
           index_ref: :ets.tid()
         }
 
-  defdelegate paginate(index, entity, params), to: Indexed.Paginator
+  defdelegate paginate(index, entity_name, params), to: Indexed.Paginator
 
   @doc """
   For a set of entities, load data and indexes to ETS for each.
@@ -148,16 +148,16 @@ defmodule Indexed do
   # Normalize `warm/1`'s data option.
   @spec resolve_data_opt({atom, atom, [record]} | [record] | nil, atom, [Entity.field()]) ::
           {atom, atom, [record]}
-  defp resolve_data_opt({dir, name, data}, entity, fields)
+  defp resolve_data_opt({dir, name, data}, entity_name, fields)
        when dir in [:asc, :desc] and is_list(data) do
     # If the data hint field isn't even being indexed, raise.
     if Enum.any?(fields, &(elem(&1, 0) == name)),
       do: {dir, name, data},
-      else: raise("Field #{name} is not being indexed for #{entity}.")
+      else: raise("Field #{name} is not being indexed for #{entity_name}.")
   end
 
-  defp resolve_data_opt({d, _, _}, entity, _),
-    do: raise("Bad input data direction for #{entity}: #{d}")
+  defp resolve_data_opt({d, _, _}, entity_name, _),
+    do: raise("Bad input data direction for #{entity_name}: #{d}")
 
   defp resolve_data_opt(data, _, _) when is_list(data), do: {nil, nil, data}
 
@@ -235,12 +235,12 @@ defmodule Indexed do
   # Create the asc and desc indexes for one field.
   @spec warm_index(:ets.tid(), atom, prefilter, Entity.field(), data_tuple) :: true
   # Data direction hint matches this field -- no need to sort.
-  defp warm_index(ref, entity, prefilter, {name, _sort_hint}, {data_dir, name, data}) do
+  defp warm_index(ref, entity_name, prefilter, {name, _sort_hint}, {data_dir, name, data}) do
     data_ids = id_list(data)
 
-    asc_key = index_key(entity, name, :asc, prefilter)
+    asc_key = index_key(entity_name, name, :asc, prefilter)
     asc_ids = if data_dir == :asc, do: data_ids, else: Enum.reverse(data_ids)
-    desc_key = index_key(entity, name, :desc, prefilter)
+    desc_key = index_key(entity_name, name, :desc, prefilter)
     desc_ids = if data_dir == :desc, do: data_ids, else: Enum.reverse(data_ids)
 
     :ets.insert(ref, {asc_key, asc_ids})
@@ -248,15 +248,15 @@ defmodule Indexed do
   end
 
   # Data direction hint does NOT match this field -- sorting needed.
-  defp warm_index(ref, entity, prefilter, {name, sort_hint}, {_, _, data}) do
+  defp warm_index(ref, entity_name, prefilter, {name, sort_hint}, {_, _, data}) do
     sort_fn =
       case sort_hint do
         :date_time -> &(:lt == DateTime.compare(Map.get(&1, name), Map.get(&2, name)))
         nil -> &(Map.get(&1, name) < Map.get(&2, name))
       end
 
-    asc_key = index_key(entity, name, :asc, prefilter)
-    desc_key = index_key(entity, name, :desc, prefilter)
+    asc_key = index_key(entity_name, name, :asc, prefilter)
+    desc_key = index_key(entity_name, name, :desc, prefilter)
     asc_ids = data |> Enum.sort(sort_fn) |> id_list()
 
     :ets.insert(ref, {asc_key, asc_ids})
@@ -265,28 +265,28 @@ defmodule Indexed do
 
   @doc "Cache key for a given entity, field, direction, and prefilter."
   @spec index_key(atom, atom, :asc | :desc, prefilter) :: String.t()
-  def index_key(entity, field_name, direction, prefilter \\ nil)
+  def index_key(entity_name, field_name, direction, prefilter \\ nil)
 
-  def index_key(entity, field_name, direction, nil) do
-    "#{entity}[]#{field_name}_#{direction}"
+  def index_key(entity_name, field_name, direction, nil) do
+    "#{entity_name}[]#{field_name}_#{direction}"
   end
 
-  def index_key(entity, field_name, direction, {pf_key, pf_val}) do
-    "#{entity}[#{pf_key}-#{pf_val}]#{field_name}_#{direction}"
+  def index_key(entity_name, field_name, direction, {pf_key, pf_val}) do
+    "#{entity_name}[#{pf_key}-#{pf_val}]#{field_name}_#{direction}"
   end
 
   @doc """
   Cache key holding unique values for a given entity, field, and prefilter.
   """
   @spec unique_values_key(atom, prefilter, atom) :: String.t()
-  def unique_values_key(entity, prefilter, field_name)
+  def unique_values_key(entity_name, prefilter, field_name)
 
-  def unique_values_key(entity, nil, field_name) do
-    "unique_#{entity}[]#{field_name}"
+  def unique_values_key(entity_name, nil, field_name) do
+    "unique_#{entity_name}[]#{field_name}"
   end
 
-  def unique_values_key(entity, {pf_key, pf_val}, field_name) do
-    "unique_#{entity}[#{pf_key}-#{pf_val}]#{field_name}"
+  def unique_values_key(entity_name, {pf_key, pf_val}, field_name) do
+    "unique_#{entity_name}[#{pf_key}-#{pf_val}]#{field_name}"
   end
 
   # Return a list of all `:id` elements from the `collection`.
@@ -297,8 +297,8 @@ defmodule Indexed do
 
   @doc "Get an entity by id from the index."
   @spec get(t, atom, id) :: any
-  def get(index, entity, id) do
-    case :ets.lookup(Map.fetch!(index.entities, entity).ref, id) do
+  def get(index, entity_name, id) do
+    case :ets.lookup(Map.fetch!(index.entities, entity_name).ref, id) do
       [{^id, val}] -> val
       [] -> nil
     end
@@ -306,8 +306,8 @@ defmodule Indexed do
 
   @doc "Get an index data structure."
   @spec get_index(t, atom, atom, :asc | :desc, prefilter) :: [id]
-  def get_index(index, entity, field_name, direction, prefilter \\ nil) do
-    get_index(index, index_key(entity, field_name, direction, prefilter))
+  def get_index(index, entity_name, field_name, direction, prefilter \\ nil) do
+    get_index(index, index_key(entity_name, field_name, direction, prefilter))
   end
 
   # Get an index data structure by key (see `index_key/4`).
@@ -319,10 +319,10 @@ defmodule Indexed do
     end
   end
 
-  @doc "Get a list of unique values for `field_name` under `entity`."
+  @doc "Get a list of unique values for `field_name` under `entity_name`."
   @spec get_unique_values(t, atom, atom, prefilter) :: [any]
-  def get_unique_values(index, entity, field_name, prefilter \\ nil) do
-    get_index(index, unique_values_key(entity, prefilter, field_name))
+  def get_unique_values(index, entity_name, field_name, prefilter \\ nil) do
+    get_index(index, unique_values_key(entity_name, prefilter, field_name))
   end
 
   @doc """
@@ -335,23 +335,23 @@ defmodule Indexed do
     used. Default is nil - no prefilter.
   """
   @spec get_values(t, atom, atom, :asc | :desc, keyword) :: [record]
-  def get_values(index, entity, order_field, order_direction, opts \\ []) do
-    id_keyed_map =
-      index.entities
-      |> Map.fetch!(entity)
-      |> Map.fetch!(:ref)
-      |> :ets.tab2list()
-      |> Map.new()
-
+  def get_values(index, entity_name, order_field, order_direction, opts \\ []) do
     index
-    |> get_index(entity, order_field, order_direction, opts[:prefilter])
-    |> Enum.map(&id_keyed_map[&1])
+    |> get_index(entity_name, order_field, order_direction, opts[:prefilter])
+    |> Enum.map(&get(index, entity_name, &1))
+
+    # id_keyed_map =
+    #   index.entities
+    #   |> Map.fetch!(entity_name)
+    #   |> Map.fetch!(:ref)
+    #   |> :ets.tab2list()
+    #   |> Map.new()
   end
 
   # Insert a record into the cached data. (Indexes still need updating.)
   @spec put(t, atom, record) :: true
-  defp put(index, entity, %{id: id} = record) do
-    :ets.insert(Map.fetch!(index.entities, entity).ref, {id, record})
+  defp put(index, entity_name, %{id: id} = record) do
+    :ets.insert(Map.fetch!(index.entities, entity_name).ref, {id, record})
   end
 
   # Set an index into ETS, overwriting for the key, if need be.
@@ -403,6 +403,7 @@ defmodule Indexed do
       put_index(index, index_key(entity_name, name, :asc), Enum.reverse(desc_ids))
     end)
 
+    # If there's at least one prefilter, prepare some data and update them.
     if match?([_ | _], entity.prefilters) do
       # Synthesize a data tuple based on any field we actually index.
       {some_field, _} = hd(entity.fields)
@@ -421,17 +422,17 @@ defmodule Indexed do
 
   # Add the id of `record` to the list of descending ids, sorting by `field`.
   @spec insert_by([id], record, atom, Entity.field(), t) :: [id]
-  defp insert_by(old_desc_ids, record, entity, {name, sort_hint}, index) do
+  defp insert_by(old_desc_ids, record, entity_name, {name, sort_hint}, index) do
     find_fun =
       case sort_hint do
         :date_time ->
           fn id ->
-            val = Map.get(get(index, entity, id), name)
+            val = Map.get(get(index, entity_name, id), name)
             :lt == DateTime.compare(val, Map.get(record, name))
           end
 
         nil ->
-          &(Map.get(get(index, entity, &1), name) < Map.get(record, name))
+          &(Map.get(get(index, entity_name, &1), name) < Map.get(record, name))
       end
 
     first_smaller_idx = Enum.find_index(old_desc_ids, find_fun)

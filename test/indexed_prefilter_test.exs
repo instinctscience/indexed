@@ -3,9 +3,10 @@ defmodule Album do
 end
 
 defmodule IndexedPrefilterTest do
-  @moduledoc "Test `:prefilter` and `:maintain_unique` options."
+  @moduledoc "Test `:prefilter` and its `:maintain_unique` option."
   use ExUnit.Case
 
+  # (Who needs album names?)
   @albums [
     %Album{id: 1, label: "Liquid V Recordings", media: "Vinyl", artist: "Calibre"},
     %Album{id: 2, label: "Hospital Records", media: "CD", artist: "Logistics"},
@@ -21,7 +22,10 @@ defmodule IndexedPrefilterTest do
           albums: [
             data: {:asc, :artist, @albums},
             fields: [:artist],
-            prefilters: [nil: [maintain_unique: [:media]], label: [maintain_unique: [:media]]]
+            prefilters: [
+              nil: [maintain_unique: [:media]],
+              label: [maintain_unique: [:media]]
+            ]
           ]
         )
     ]
@@ -55,12 +59,16 @@ defmodule IndexedPrefilterTest do
   end
 
   test "get_unique_values", %{index: index} do
+    # This is available because prefilter field keys imply manage_uniques on
+    # the top level (prefilter nil).
     assert ["Hospital Records", "Liquid V Recordings"] ==
              Indexed.get_unique_values(index, :albums, :label)
 
+    # manage_uniques for media was defined on top level (prefilter nil).
     assert ~w(CD FLAC Vinyl) ==
              Indexed.get_unique_values(index, :albums, :media)
 
+    # Get unique media values behind the "label=Hospital Records" prefilter.
     assert ~w(CD FLAC) ==
              Indexed.get_unique_values(index, :albums, :media, {:label, "Hospital Records"})
   end
@@ -96,6 +104,42 @@ defmodule IndexedPrefilterTest do
     test "get_unique_values", %{index: index} do
       assert ["Hospital Records", "Liquid V Recordings"] ==
                Indexed.get_unique_values(index, :albums, :label)
+    end
+  end
+
+  describe "looks good after updating a record" do
+    setup %{index: index} do
+      album = %Album{id: 2, label: "Hospital Records", media: "8-track", artist: "Logistics"}
+      Indexed.set_record(index, :albums, album, already_held?: true)
+      [album: album]
+    end
+
+    test "basic prefilter", %{album: album, index: index} do
+      assert %Paginator.Page{
+               entries: [
+                 ^album,
+                 %Album{
+                   id: 3,
+                   label: "Hospital Records",
+                   media: "FLAC",
+                   artist: "London Elektricity"
+                 },
+                 %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "S.P.Y"}
+               ]
+             } =
+               Indexed.paginate(index, :albums,
+                 order_field: :artist,
+                 order_direction: :asc,
+                 prefilter: {:label, "Hospital Records"}
+               )
+    end
+
+    test "get_unique_values", %{index: index} do
+      assert ["Hospital Records", "Liquid V Recordings"] ==
+               Indexed.get_unique_values(index, :albums, :label)
+
+      assert ~w(8-track FLAC) ==
+               Indexed.get_unique_values(index, :albums, :media, {:label, "Hospital Records"})
     end
   end
 end
