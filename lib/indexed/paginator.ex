@@ -33,6 +33,9 @@ defmodule Indexed.Paginator do
     * `:order_field` - field atom (eg. `:updated_by`)
     * `:filter` - An optional function which takes a record and returns a
       boolean -- true if the record is desired in pagination.
+    * `:prefilter` - Two-element tuple, indicating the field name and value for
+      the prefiltered index to be used. Default is `nil`, indicating that the
+      index with the non-prefiltered, full list of records should be used.
 
     # * `:fetch_cursor_value_fun` function of arity 2 to lookup cursor values on returned records.
     # Defaults to `Paginator.default_fetch_cursor_value/2`
@@ -58,7 +61,7 @@ defmodule Indexed.Paginator do
     order_direction = params[:order_direction]
     order_field = params[:order_field]
     cursor_fields = [{order_field, order_direction}, {:id, :asc}]
-    ordered_ids = get_index(index, entity, order_field, order_direction)
+    ordered_ids = get_index(index, entity, order_field, order_direction, params[:prefilter])
 
     filter = params[:filter] || fn _record -> true end
     getter = fn id -> get(index, entity, id) end

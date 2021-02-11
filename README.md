@@ -7,7 +7,8 @@ table stores all such records of a given entity, keyed by id.
 
 Configure and warm your cache with some data and get an `%Indexed{}` in
 return. Pass this struct into `Indexed` functions to get, update, and paginate
-records.
+records. Remember to do this from the same process which warmed the cache as
+the ETS tables are protected.
 
 ## Pagination
 
