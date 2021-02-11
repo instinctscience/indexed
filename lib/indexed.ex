@@ -71,7 +71,7 @@ defmodule Indexed do
     * `{field, direction, list}` - data `list`, with a hint that it is already
       sorted by field (atom) and direction (:asc or :desc), `t:data_tuple/0`.
     * `list` - data list with unknown ordering; must be sorted for every field.
-  * `:fields` - List of field name atoms to index by.
+  * `:fields` - List of field name atoms to index by. At least one required.
     * If field is a DateTime, wrap it in a tuple: `{:my_field, :date_time}`.
     * Ascending and descending will be indexed for each field.
   * `:maintain_unique` - List of field name atoms for which to manage unique
@@ -335,16 +335,20 @@ defmodule Indexed do
       put_index(index, index_key(entity_name, name, :asc), Enum.reverse(desc_ids))
     end)
 
-    # Synthesize a data tuple based on any field we actually index.
-    {some_field, _} = hd(entity.fields)
-    some_field_desc_ids = get_index(index, entity_name, some_field, :desc)
-    full_data = Enum.map(some_field_desc_ids, &get(index, entity_name, &1))
-    data_tuple = {:desc, some_field, full_data}
+    if match?([_ | _], entity.prefilters) do
+      # Synthesize a data tuple based on any field we actually index.
+      {some_field, _} = hd(entity.fields)
+      some_field_desc_ids = get_index(index, entity_name, some_field, :desc)
+      full_data = Enum.map(some_field_desc_ids, &get(index, entity_name, &1))
+      data_tuple = {:desc, some_field, full_data}
 
-    # Update the cache for each configured prefilter.
-    Enum.each(entity.prefilters, fn pf_key ->
-      warm_prefilter(index.index_ref, entity_name, pf_key, entity.fields, data_tuple)
-    end)
+      # Update the cache for each configured prefilter.
+      for pf_key <- entity.prefilters do
+        warm_prefilter(index.index_ref, entity_name, pf_key, entity.fields, data_tuple)
+      end
+    end
+
+    :ok
   end
 
   # Add the id of `record` to the list of descending ids, sorting by `field`.
