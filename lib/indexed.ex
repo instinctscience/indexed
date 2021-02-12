@@ -195,17 +195,18 @@ defmodule Indexed do
          fields,
          {d_dir, d_name, full_data}
        ) do
-    # Store one list of unique values.
-    store_uniques = fn prefilter, field_name, values ->
-      key = unique_values_key(entity_name, prefilter, field_name)
-      :ets.insert(index_ref, {key, values})
-    end
-
     # Save list of unique values for each field configured by :maintain_unique.
     store_all_uniques = fn prefilter, data ->
       Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
-        values = data |> Enum.map(&Map.get(&1, field_name)) |> Enum.uniq() |> Enum.sort()
-        store_uniques.(prefilter, field_name, values)
+        {counts_map, list} =
+          Enum.reduce(data, {%{}, []}, fn record, {counts_map, list} ->
+            val = Map.get(record, field_name)
+            num = Map.get(counts_map, val, 0) + 1
+            {Map.put(counts_map, val, num), [val | list]}
+          end)
+
+        list = Enum.sort(Enum.uniq(list))
+        store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
       end)
     end
 
@@ -224,18 +225,37 @@ defmodule Indexed do
       grouped = Enum.group_by(full_data, &Map.get(&1, pf_key))
 
       # Store list of no-prefilter uniques for this field. (Remember that
-      # prefilter fields imply :maintain_unique on the nil prefilter.) These
-      # are needed in order to know what is useful to pass into
+      # prefilter fields imply :maintain_unique on the nil prefilter.)
+      # These are needed in order to know what is useful to pass into
       # `get_unique_values/4`.
-      values = grouped |> Map.keys() |> Enum.sort()
-      store_uniques.(nil, pf_key, values)
+      {counts_map, list} =
+        Enum.reduce(grouped, {%{}, []}, fn {pf_val, records}, {counts_map, list} ->
+          {Map.put(counts_map, pf_val, length(records)), [pf_val | list]}
+        end)
 
+      list = Enum.sort(Enum.uniq(list))
+      store_uniques(index_ref, entity_name, nil, pf_key, counts_map, list)
+
+      # For each value found for the prefilter, create a set of indexes.
       Enum.each(grouped, fn {pf_val, data} ->
         prefilter = {pf_key, pf_val}
         Enum.each(fields, &warm_index.(prefilter, &1, data))
         store_all_uniques.(prefilter, data)
       end)
     end
+  end
+
+  # Store two indexes for unique value tracking.
+  @spec store_uniques(:ets.tid(), atom, prefilter, atom, %{any => non_neg_integer}, [any] | nil) ::
+          true
+  defp store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list) do
+    if list do
+      list_key = unique_values_key(entity_name, prefilter, field_name, :list)
+      :ets.insert(index_ref, {list_key, list})
+    end
+
+    counts_key = unique_values_key(entity_name, prefilter, field_name, :counts)
+    :ets.insert(index_ref, {counts_key, counts_map})
   end
 
   # Create the asc and desc indexes for one field.
@@ -278,21 +298,17 @@ defmodule Indexed do
   end
 
   def index_key(entity_name, field_name, direction, {pf_key, pf_val}) do
-    "#{entity_name}[#{pf_key}-#{pf_val}]#{field_name}_#{direction}"
+    "#{entity_name}[#{pf_key}=#{pf_val}]#{field_name}_#{direction}"
   end
 
-  @doc """
-  Cache key holding unique values for a given entity, field, and prefilter.
-  """
-  @spec unique_values_key(atom, prefilter, atom) :: String.t()
-  def unique_values_key(entity_name, prefilter, field_name)
-
-  def unique_values_key(entity_name, nil, field_name) do
-    "unique_#{entity_name}[]#{field_name}"
+  # Cache key holding unique values for a given entity, field, and prefilter.
+  @spec unique_values_key(atom, prefilter, atom, :counts | :list) :: String.t()
+  defp unique_values_key(entity_name, nil, field_name, mode) do
+    "unique_#{mode}_#{entity_name}[]#{field_name}"
   end
 
-  def unique_values_key(entity_name, {pf_key, pf_val}, field_name) do
-    "unique_#{entity_name}[#{pf_key}-#{pf_val}]#{field_name}"
+  defp unique_values_key(entity_name, {pf_key, pf_val}, field_name, mode) do
+    "unique_#{mode}_#{entity_name}[#{pf_key}=#{pf_val}]#{field_name}"
   end
 
   # Return a list of all `:id` elements from the `collection`.
@@ -325,10 +341,18 @@ defmodule Indexed do
     end
   end
 
-  @doc "Get a list of unique values for `field_name` under `entity_name`."
-  @spec get_unique_values(t, atom, atom, prefilter) :: [any]
-  def get_unique_values(index, entity_name, field_name, prefilter \\ nil) do
-    get_index(index, unique_values_key(entity_name, prefilter, field_name))
+  @doc """
+  Get a list of unique values for `field_name` under `entity_name`.
+
+  Use one of the following for the last argument, `mode`:
+
+  * `:counts` - used to store a map with values as keys and the number of
+    occurrences across the records as vals.
+  * `:list` (default) - used to store a list of the values, sorted ascending.
+  """
+  @spec get_unique_values(t, atom, atom, prefilter, :count | :list) :: [any]
+  def get_unique_values(index, entity_name, field_name, prefilter \\ nil, mode \\ :list) do
+    get_index(index, unique_values_key(entity_name, prefilter, field_name, mode))
   end
 
   @doc """
@@ -345,13 +369,6 @@ defmodule Indexed do
     index
     |> get_index(entity_name, order_field, order_direction, opts[:prefilter])
     |> Enum.map(&get(index, entity_name, &1))
-
-    # id_keyed_map =
-    #   index.entities
-    #   |> Map.fetch!(entity_name)
-    #   |> Map.fetch!(:ref)
-    #   |> :ets.tab2list()
-    #   |> Map.new()
   end
 
   # Insert a record into the cached data. (Indexes still need updating.)
@@ -372,58 +389,109 @@ defmodule Indexed do
   If it is known for sure whether or not the record was previously held in
   cache, include the `already_held?` argument to speed the operation
   slightly.
-
-  ## Options
-
-  * `:already_held?` - `true` if it is known that the record was previously
-    held in the cache; `false` if it isn't. Default is `nil` which indicates
-    that it is unknown - this will be a bit slower.
   """
   @spec set_record(t, atom, record, keyword) :: :ok
   def set_record(index, entity_name, record, opts \\ []) do
     entity = Map.fetch!(index.entities, entity_name)
+    previous = opts[:already_held?] != false && get(index, entity_name, record.id)
 
-    # (Note, already_held? doesn't help for updating the prefilter indexes.)
-    already_held? =
-      case opts[:already_held?] do
-        b when is_boolean(b) -> b
-        _ -> not is_nil(get(index, entity_name, record.id))
-      end
-
+    # Update the record itself (by id).
     put(index, entity_name, record)
 
-    # Update the no-prefilter index.
-    Enum.each(entity.fields, fn {name, _sort_hint} = field ->
-      desc_key = index_key(entity_name, name, :desc)
-      desc_ids = get_index(index, desc_key)
+    Enum.each(entity.prefilters, fn
+      {nil, pf_opts} ->
+        nil
 
-      # Remove the id from the list if it exists.
-      desc_ids =
-        if already_held?,
-          do: Enum.reject(desc_ids, &(&1 == record.id)),
-          else: desc_ids
+      {pf_key, pf_opts} ->
+        cond do
+          previous && previous[pf_key] != record[pf_key] ->
+            remove_unique(index.index_ref, entity_name, nil, pf_key, previous[pf_key])
+            add_unique(index.index_ref, entity_name, nil, pf_key, record[pf_key])
+            # prefilter = {pf_key, previous[pf_key]}
 
-      desc_ids = insert_by(desc_ids, record, entity_name, field, index)
+            # store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
 
-      put_index(index, desc_key, desc_ids)
-      put_index(index, index_key(entity_name, name, :asc), Enum.reverse(desc_ids))
+            # previous && previous[pf_key] == record[pf_key] ->
+        end
+
+        # unless previous && previous[pf_key] == record[pf_key] do
+        # end
+        # Enum.each(entity.fields, fn {field_name, field_opts} ->
+        #   if !previous || previous[field_name] != record[field_name] do
+        #   key = index_key(entity_name, field_name,)
+        # end)
     end)
 
-    # If there's at least one prefilter, prepare some data and update them.
-    if match?([_ | _], entity.prefilters) do
-      # Synthesize a data tuple based on any field we actually index.
-      {some_field, _} = hd(entity.fields)
-      some_field_desc_ids = get_index(index, entity_name, some_field, :desc)
-      full_data = Enum.map(some_field_desc_ids, &get(index, entity_name, &1))
-      data_tuple = {:desc, some_field, full_data}
+    # # Update the no-prefilter index.
 
-      # Update the cache for each configured prefilter.
-      for pf_key <- entity.prefilters do
-        warm_prefilter(index.index_ref, entity_name, pf_key, entity.fields, data_tuple)
+    # Enum.each(entity.fields, fn {name, _sort_hint} = field ->
+    #   desc_key = index_key(entity_name, name, :desc)
+    #   desc_ids = get_index(index, desc_key)
+
+    #   # Remove the id from the list if it exists.
+    #   desc_ids =
+    #     if previous,
+    #       do: Enum.reject(desc_ids, &(&1 == record.id)),
+    #       else: desc_ids
+
+    #   desc_ids = insert_by(desc_ids, record, entity_name, field, index)
+
+    #   put_index(index, desc_key, desc_ids)
+    #   put_index(index, index_key(entity_name, name, :asc), Enum.reverse(desc_ids))
+    # end)
+
+    # # Update the prefilter indexes.
+    # Enum.each(entity.prefilters, fn prefilter ->
+    #   # Synthesize a data tuple based on any field we actually index.
+    #   {some_field, _} = hd(entity.fields)
+    #   some_field_desc_ids = get_index(index, entity_name, some_field, :desc)
+    #   full_data = Enum.map(some_field_desc_ids, &get(index, entity_name, &1))
+    #   data_tuple = {:desc, some_field, full_data}
+
+    #   # Update the cache for each configured prefilter.
+    #   for pf_key <- entity.prefilters do
+    #     warm_prefilter(index.index_ref, entity_name, pf_key, entity.fields, data_tuple)
+    #   end
+    # end)
+  end
+
+  # Remove `value` from the `field_name` unique values tally for the given
+  # entity/prefilter.
+  @spec remove_unique(:ets.tid(), atom, prefilter, atom, any) :: true
+  defp remove_unique(index_ref, entity_name, prefilter, field_name, value) do
+    counts_key = unique_values_key(entity_name, prefilter, field_name, :counts)
+
+    {counts_map, list} =
+      case get_index(index_ref, counts_key) do
+        %{^value => n} = counts_map when n > 1 ->
+          {Map.put(counts_map, value, n - 1), nil}
+
+        %{^value => n} = counts_map when n == 1 ->
+          list_key = unique_values_key(entity_name, prefilter, field_name, :list)
+          list = get_index(index_ref, list_key)
+          {Map.delete(counts_map, value), list -- [value]}
       end
-    end
 
-    :ok
+    store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
+  end
+
+  @spec add_unique(:ets.tid(), atom, prefilter, atom, any) :: true
+  defp add_unique(index_ref, entity_name, prefilter, field_name, value) do
+    counts_key = unique_values_key(entity_name, prefilter, field_name, :counts)
+    counts_map = get_index(index_ref, counts_key)
+
+    {counts_map, list} =
+      case counts_map[field_name] do
+        nil ->
+          list_key = unique_values_key(entity_name, prefilter, field_name, :list)
+          list = get_index(index_ref, list_key)
+          first_bigger_idx = Enum.find_index(list, &(&1 > value))
+          list = List.insert_at(list, first_bigger_idx || 0, value)
+          counts_map = Map.put(counts_map, field_name, 1)
+          {counts_map, list}
+      end
+
+    store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
   end
 
   # Add the id of `record` to the list of descending ids, sorting by `field`.
@@ -438,7 +506,9 @@ defmodule Indexed do
           end
 
         nil ->
-          &(Map.get(get(index, entity_name, &1), name) < Map.get(record, name))
+          this_value = Map.get(record, name)
+          &(Map.get(get(index, entity_name, &1), name) < this_value)
+          # &(Map.get(get(index, entity_name, &1), name) < Map.get(record, name))
       end
 
     first_smaller_idx = Enum.find_index(old_desc_ids, find_fun)

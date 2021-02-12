@@ -31,6 +31,22 @@ defmodule IndexedPrefilterTest do
     ]
   end
 
+  test "counts_map", %{index: index} do
+    assert %{"CD" => 2, "FLAC" => 2, "Vinyl" => 1} ==
+             Indexed.get_unique_values(index, :albums, :media, nil, :counts)
+
+    assert ["CD", "FLAC", "Vinyl"] ==
+             Indexed.get_unique_values(index, :albums, :media, nil, :list)
+
+    prefilter = {:label, "Hospital Records"}
+
+    assert %{"CD" => 1, "FLAC" => 2} ==
+             Indexed.get_unique_values(index, :albums, :media, prefilter, :counts)
+
+    assert ["CD", "FLAC"] ==
+             Indexed.get_unique_values(index, :albums, :media, prefilter, :list)
+  end
+
   test "basic prefilter", %{index: index} do
     assert %Paginator.Page{
              entries: [
@@ -110,7 +126,7 @@ defmodule IndexedPrefilterTest do
   describe "looks good after updating a record" do
     setup %{index: index} do
       album = %Album{id: 2, label: "Hospital Records", media: "8-track", artist: "Logistics"}
-      Indexed.set_record(index, :albums, album, already_held?: true)
+      Indexed.set_record(index, :albums, album)
       [album: album]
     end
 
