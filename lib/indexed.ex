@@ -29,8 +29,16 @@ defmodule Indexed do
   @typedoc "Configuration info for a prefilter."
   @type prefilter_config :: {atom, opts :: keyword}
 
+  @typedoc "Occurrences of each value (map key) under a prefilter."
+  @type counts_map :: %{any => non_neg_integer}
+
   @typep id :: any
   @typep record :: map
+
+  # An aligning counts_map and list of its keys.
+  # Bonus: when passed into `put_uniques_bundle/5`, `nil` for the list indicates
+  # that it should not be saved.
+  @typep uniques_bundle :: {counts_map, list :: [any] | nil}
 
   # Field name and value for which separate indexes for each field should be
   # kept. Note that these are made in conjunction with `get_unique_values/4`
@@ -185,8 +193,8 @@ defmodule Indexed do
   # If `pf_key` is nil, then we're warming the full set -- no prefilter.
   #   In this case, load indexes for each field.
   # If `pf_key` is a field name atom to prefilter on, then group the given data
-  #   by that field. For each grouping, a full set of indexes for each field will
-  #   be created for each unique value found. Unique values list is updated, too.
+  #   by that field. For each grouping, a full set of indexes for each
+  #   field/value pair will be created. Unique values list is updated, too.
   @spec warm_prefilter(:ets.tid(), atom, prefilter_config, [Entity.field()], data_tuple) :: :ok
   defp warm_prefilter(
          index_ref,
@@ -205,8 +213,8 @@ defmodule Indexed do
             {Map.put(counts_map, val, num), [val | list]}
           end)
 
-        list = Enum.sort(Enum.uniq(list))
-        store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
+        bundle = {counts_map, Enum.sort(Enum.uniq(list))}
+        put_uniques_bundle(bundle, index_ref, entity_name, prefilter, field_name)
       end)
     end
 
@@ -224,17 +232,17 @@ defmodule Indexed do
     else
       grouped = Enum.group_by(full_data, &Map.get(&1, pf_key))
 
-      # Store list of no-prefilter uniques for this field. (Remember that
-      # prefilter fields imply :maintain_unique on the nil prefilter.)
-      # These are needed in order to know what is useful to pass into
-      # `get_unique_values/4`.
+      # Prepare & store list of no-prefilter uniques for this field.
+      # (Remember that prefilter fields imply :maintain_unique on the nil
+      # prefilter since these are needed in order to know what is useful to
+      # pass into `get_unique_values/4`.)
       {counts_map, list} =
         Enum.reduce(grouped, {%{}, []}, fn {pf_val, records}, {counts_map, list} ->
           {Map.put(counts_map, pf_val, length(records)), [pf_val | list]}
         end)
 
-      list = Enum.sort(Enum.uniq(list))
-      store_uniques(index_ref, entity_name, nil, pf_key, counts_map, list)
+      bundle = {counts_map, Enum.sort(Enum.uniq(list))}
+      put_uniques_bundle(bundle, index_ref, entity_name, nil, pf_key)
 
       # For each value found for the prefilter, create a set of indexes.
       Enum.each(grouped, fn {pf_val, data} ->
@@ -246,9 +254,8 @@ defmodule Indexed do
   end
 
   # Store two indexes for unique value tracking.
-  @spec store_uniques(:ets.tid(), atom, prefilter, atom, %{any => non_neg_integer}, [any] | nil) ::
-          true
-  defp store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list) do
+  @spec put_uniques_bundle(uniques_bundle, :ets.tid(), atom, prefilter, atom) :: true
+  defp put_uniques_bundle({counts_map, list}, index_ref, entity_name, prefilter, field_name) do
     if list do
       list_key = unique_values_key(entity_name, prefilter, field_name, :list)
       :ets.insert(index_ref, {list_key, list})
@@ -342,7 +349,8 @@ defmodule Indexed do
   end
 
   @doc """
-  Get a list of unique values for `field_name` under `entity_name`.
+  For the given `prefilter`, get a list of unique values for `field_name`
+  under `entity_name`.
 
   Use one of the following for the last argument, `mode`:
 
@@ -350,9 +358,17 @@ defmodule Indexed do
     occurrences across the records as vals.
   * `:list` (default) - used to store a list of the values, sorted ascending.
   """
-  @spec get_unique_values(t, atom, atom, prefilter, :count | :list) :: [any]
+  @spec get_unique_values(t, atom, atom, prefilter, :counts | :list) :: counts_map | [any]
   def get_unique_values(index, entity_name, field_name, prefilter \\ nil, mode \\ :list) do
     get_index(index, unique_values_key(entity_name, prefilter, field_name, mode))
+  end
+
+  # Get counts_map and list versions of a unique values list at the same time.
+  @spec get_uniques_bundle(t, atom, atom, prefilter) :: uniques_bundle
+  defp get_uniques_bundle(index, entity_name, field_name, prefilter) do
+    counts_map = get_unique_values(index, entity_name, field_name, prefilter, :counts)
+    list = get_unique_values(index, entity_name, field_name, prefilter, :list)
+    {counts_map, list}
   end
 
   @doc """
@@ -377,12 +393,6 @@ defmodule Indexed do
     :ets.insert(Map.fetch!(index.entities, entity_name).ref, {id, record})
   end
 
-  # Set an index into ETS, overwriting for the key, if need be.
-  @spec put_index(t, String.t(), [id]) :: true
-  defp put_index(index, index_name, id_list) do
-    :ets.insert(index.index_ref, {index_name, id_list})
-  end
-
   @doc """
   Add or update a record, along with the indexes to reflect the change.
 
@@ -391,35 +401,96 @@ defmodule Indexed do
   slightly.
   """
   @spec set_record(t, atom, record, keyword) :: :ok
-  def set_record(index, entity_name, record, opts \\ []) do
+  def set_record(%{index_ref: index_ref} = index, entity_name, record, opts \\ []) do
     entity = Map.fetch!(index.entities, entity_name)
     previous = opts[:already_held?] != false && get(index, entity_name, record.id)
 
     # Update the record itself (by id).
     put(index, entity_name, record)
 
+    # nil prefilter
+
     Enum.each(entity.prefilters, fn
       {nil, pf_opts} ->
         nil
 
       {pf_key, pf_opts} ->
-        cond do
-          previous && previous[pf_key] != record[pf_key] ->
-            remove_unique(index.index_ref, entity_name, nil, pf_key, previous[pf_key])
-            add_unique(index.index_ref, entity_name, nil, pf_key, record[pf_key])
-            # prefilter = {pf_key, previous[pf_key]}
+        {_, list} = bundle = get_uniques_bundle(index, entity_name, pf_key, nil)
 
-            # store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
+        # For each unique value under pf_key...
+        Enum.each(list, fn value ->
+          # Get and update global (prefilter nil) uniques for the pf field.
+          cond do
+            previous && Map.get(previous, pf_key) == Map.get(record, pf_key) ->
+              # For this prefilter key, record hasn't moved. Do nothing.
+              nil
 
-            # previous && previous[pf_key] == record[pf_key] ->
-        end
+            previous && previous[pf_key] == value ->
+              # Record was moved to another prefilter. Remove it from this one.
+              bundle
+              |> remove_unique(value)
+              |> put_uniques_bundle(index_ref, entity_name, nil, pf_key)
 
-        # unless previous && previous[pf_key] == record[pf_key] do
+            record[pf_key] == value ->
+              # Record was moved to this prefilter. Add it.
+              bundle
+              |> add_unique(value)
+              |> put_uniques_bundle(index_ref, entity_name, nil, pf_key)
+
+            true ->
+              nil
+          end
+
+          prefilter = {pf_key, value}
+
+          # Update indexes for each field under the current prefilter.
+          Enum.each(entity.fields, fn {field_name, _} = field ->
+            asc_key = index_key(entity_name, field_name, :asc, prefilter)
+            desc_key = index_key(entity_name, field_name, :desc, prefilter)
+            desc_ids = get_index(index, desc_key)
+
+            # Remove the id from the list if it exists; insert it for sure.
+            desc_ids = if previous, do: desc_ids -- [record.id], else: desc_ids
+            desc_ids = insert_by(desc_ids, record, entity_name, field, index)
+
+            :ets.insert(index_ref, {desc_key, desc_ids})
+            :ets.insert(index_ref, {asc_key, Enum.reverse(desc_ids)})
+          end)
+
+          # Update any configured :maintain_uniques fields for this prefilter.
+          Enum.each(pf_opts[:maintain_unique] || [], fn
+            field_name ->
+              bundle = get_uniques_bundle(index, entity_name, field_name, prefilter)
+              new_value = Map.get(record, field_name)
+
+              new_bundle =
+                if previous && Map.get(previous, field_name) != new_value,
+                  do: remove_unique(bundle, Map.get(previous, field_name)),
+                  else: bundle
+
+              new_bundle
+              |> add_unique(new_value)
+              |> put_uniques_bundle(index_ref, entity_name, prefilter, field_name)
+          end)
+        end)
+
+        # cond do
+        #   previous && previous[pf_key] != record[pf_key] ->
+        #     remove_unique(index_ref, entity_name, nil, pf_key, previous[pf_key], bundle)
+        #     add_unique(index_ref, entity_name, nil, pf_key, record[pf_key], bundle)
+        #     # prefilter = {pf_key, previous[pf_key]}
+
+        #     # put_uniques_bundle(index_ref, entity_name, prefilter, field_name, counts_map, list)
+
+        #     # previous && previous[pf_key] == record[pf_key] ->
         # end
-        # Enum.each(entity.fields, fn {field_name, field_opts} ->
-        #   if !previous || previous[field_name] != record[field_name] do
-        #   key = index_key(entity_name, field_name,)
-        # end)
+
+        # # unless previous && previous[pf_key] == record[pf_key] do
+        # # end
+        # # Enum.each(entity.fields, fn {field_name, field_opts} ->
+        # #   if !previous || previous[field_name] != record[field_name] do
+        # #   key = index_key(entity_name, field_name,)
+        # # end)
     end)
 
     # # Update the no-prefilter index.
@@ -457,41 +528,27 @@ defmodule Indexed do
 
   # Remove `value` from the `field_name` unique values tally for the given
   # entity/prefilter.
-  @spec remove_unique(:ets.tid(), atom, prefilter, atom, any) :: true
-  defp remove_unique(index_ref, entity_name, prefilter, field_name, value) do
-    counts_key = unique_values_key(entity_name, prefilter, field_name, :counts)
-
-    {counts_map, list} =
-      case get_index(index_ref, counts_key) do
-        %{^value => n} = counts_map when n > 1 ->
-          {Map.put(counts_map, value, n - 1), nil}
-
-        %{^value => n} = counts_map when n == 1 ->
-          list_key = unique_values_key(entity_name, prefilter, field_name, :list)
-          list = get_index(index_ref, list_key)
-          {Map.delete(counts_map, value), list -- [value]}
-      end
-
-    store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
+  @spec remove_unique(uniques_bundle, any) :: uniques_bundle
+  defp remove_unique({counts_map, list}, value) do
+    case Map.fetch!(counts_map, value) do
+      1 -> {Map.delete(counts_map, value), list -- [value]}
+      n -> {Map.put(counts_map, value, n - 1), nil}
+    end
   end
 
-  @spec add_unique(:ets.tid(), atom, prefilter, atom, any) :: true
-  defp add_unique(index_ref, entity_name, prefilter, field_name, value) do
-    counts_key = unique_values_key(entity_name, prefilter, field_name, :counts)
-    counts_map = get_index(index_ref, counts_key)
+  # Add a value to the uniques: in ETS and in the returned bundle.
+  @spec add_unique(uniques_bundle, any) :: uniques_bundle
+  defp add_unique({counts_map, list}, value) do
+    case counts_map[value] do
+      nil ->
+        first_bigger_idx = Enum.find_index(list, &(&1 > value))
+        new_list = List.insert_at(list, first_bigger_idx || 0, value)
+        new_counts_map = Map.put(counts_map, value, 1)
+        {new_counts_map, new_list}
 
-    {counts_map, list} =
-      case counts_map[field_name] do
-        nil ->
-          list_key = unique_values_key(entity_name, prefilter, field_name, :list)
-          list = get_index(index_ref, list_key)
-          first_bigger_idx = Enum.find_index(list, &(&1 > value))
-          list = List.insert_at(list, first_bigger_idx || 0, value)
-          counts_map = Map.put(counts_map, field_name, 1)
-          {counts_map, list}
-      end
-
-    store_uniques(index_ref, entity_name, prefilter, field_name, counts_map, list)
+      orig_count ->
+        {Map.put(counts_map, value, orig_count + 1), nil}
+    end
   end
 
   # Add the id of `record` to the list of descending ids, sorting by `field`.
