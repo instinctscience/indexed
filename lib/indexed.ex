@@ -2,6 +2,7 @@ defmodule Indexed do
   @moduledoc """
   Tools for creating an index module.
   """
+  import Indexed.Helpers
   alias __MODULE__
 
   @ets_opts [read_concurrency: true]
@@ -32,18 +33,25 @@ defmodule Indexed do
   @typedoc "Occurrences of each value (map key) under a prefilter."
   @type counts_map :: %{any => non_neg_integer}
 
-  @typep id :: any
-  @typep record :: map
+  @typedoc "A record map being cached & indexed. `:id` key is required."
+  @type record :: %{required(:id) => any}
 
-  # An aligning counts_map and list of its keys.
-  # Bonus: when passed into `put_uniques_bundle/5`, `nil` for the list indicates
-  # that it should not be saved.
-  @typep uniques_bundle :: {counts_map, list :: [any] | nil}
+  @typedoc "The value of a record's `:id` field - usually a UUID or integer."
+  @type id :: any
 
-  # Field name and value for which separate indexes for each field should be
-  # kept. Note that these are made in conjunction with `get_unique_values/4`
-  # and are not kept in state.
-  @typep prefilter :: {atom, any} | nil
+  @typedoc """
+  An aligning counts_map and list of its keys. Bonus: when passed into
+  `put_uniques_bundle/5`, `nil` for the list indicates that it should not be
+  saved.
+  """
+  @type uniques_bundle :: {counts_map, list :: [any] | nil}
+
+  @typedoc """
+  Field name and value for which separate indexes for each field should be
+  kept. Note that these are made in conjunction with `get_unique_values/4`
+  and are not kept in state.
+  """
+  @type prefilter :: {atom, any} | nil
 
   defmodule Entity do
     @moduledoc "Configuration for a type of thing to be indexed."
@@ -148,48 +156,6 @@ defmodule Indexed do
     %Indexed{entities: entities, index_ref: index_ref}
   end
 
-  # Normalize fields.
-  @spec resolve_fields_opt([atom | field_config], atom) :: [field_config]
-  defp resolve_fields_opt(fields, entity_name) do
-    match?([_ | _], fields) || raise "At least one field to index is required on #{entity_name}."
-
-    Enum.map(fields, fn
-      {_name, _opts} = f -> f
-      name when is_atom(name) -> {name, []}
-    end)
-  end
-
-  # Normalize `warm/1`'s data option.
-  @spec resolve_data_opt({atom, atom, [record]} | [record] | nil, atom, [Entity.field()]) ::
-          {atom, atom, [record]}
-  defp resolve_data_opt({dir, name, data}, entity_name, fields)
-       when dir in [:asc, :desc] and is_list(data) do
-    # If the data hint field isn't even being indexed, raise.
-    if Enum.any?(fields, &(elem(&1, 0) == name)),
-      do: {dir, name, data},
-      else: raise("Field #{name} is not being indexed for #{entity_name}.")
-  end
-
-  defp resolve_data_opt({d, _, _}, entity_name, _),
-    do: raise("Bad input data direction for #{entity_name}: #{d}")
-
-  defp resolve_data_opt(data, _, _) when is_list(data), do: {nil, nil, data}
-
-  # Normalize the prefilters option to tuples, adding `nil` prefilter if needed.
-  @spec resolve_prefilters_opt([atom | keyword] | nil) :: keyword(keyword)
-  defp resolve_prefilters_opt(prefilters) do
-    prefilters =
-      Enum.map(prefilters || [], fn
-        {pf, opts} -> {pf, Keyword.take(opts, [:maintain_unique])}
-        nil -> raise "Found simple `nil` prefilter. Leave it off unless opts are needed."
-        pf -> {pf, []}
-      end)
-
-    if Enum.any?(prefilters, &match?({nil, _}, &1)),
-      do: prefilters,
-      else: [{nil, []} | prefilters]
-  end
-
   # If `pf_key` is nil, then we're warming the full set -- no prefilter.
   #   In this case, load indexes for each field.
   # If `pf_key` is a field name atom to prefilter on, then group the given data
@@ -253,77 +219,6 @@ defmodule Indexed do
     end
   end
 
-  # Store two indexes for unique value tracking.
-  @spec put_uniques_bundle(uniques_bundle, :ets.tid(), atom, prefilter, atom) :: true
-  defp put_uniques_bundle({counts_map, list}, index_ref, entity_name, prefilter, field_name) do
-    if list do
-      list_key = unique_values_key(entity_name, prefilter, field_name, :list)
-      :ets.insert(index_ref, {list_key, list})
-    end
-
-    counts_key = unique_values_key(entity_name, prefilter, field_name, :counts)
-    :ets.insert(index_ref, {counts_key, counts_map})
-  end
-
-  # Create the asc and desc indexes for one field.
-  @spec warm_index(:ets.tid(), atom, prefilter, Entity.field(), data_tuple) :: true
-  # Data direction hint matches this field -- no need to sort.
-  defp warm_index(ref, entity_name, prefilter, {name, _sort_hint}, {data_dir, name, data}) do
-    data_ids = id_list(data)
-
-    asc_key = index_key(entity_name, name, :asc, prefilter)
-    asc_ids = if data_dir == :asc, do: data_ids, else: Enum.reverse(data_ids)
-    desc_key = index_key(entity_name, name, :desc, prefilter)
-    desc_ids = if data_dir == :desc, do: data_ids, else: Enum.reverse(data_ids)
-
-    :ets.insert(ref, {asc_key, asc_ids})
-    :ets.insert(ref, {desc_key, desc_ids})
-  end
-
-  # Data direction hint does NOT match this field -- sorting needed.
-  defp warm_index(ref, entity_name, prefilter, {name, opts}, {_, _, data}) do
-    sort_fn =
-      case opts[:sort] do
-        :date_time -> &(:lt == DateTime.compare(Map.get(&1, name), Map.get(&2, name)))
-        nil -> &(Map.get(&1, name) < Map.get(&2, name))
-      end
-
-    asc_key = index_key(entity_name, name, :asc, prefilter)
-    desc_key = index_key(entity_name, name, :desc, prefilter)
-    asc_ids = data |> Enum.sort(sort_fn) |> id_list()
-
-    :ets.insert(ref, {asc_key, asc_ids})
-    :ets.insert(ref, {desc_key, Enum.reverse(asc_ids)})
-  end
-
-  @doc "Cache key for a given entity, field, direction, and prefilter."
-  @spec index_key(atom, atom, :asc | :desc, prefilter) :: String.t()
-  def index_key(entity_name, field_name, direction, prefilter \\ nil)
-
-  def index_key(entity_name, field_name, direction, nil) do
-    "#{entity_name}[]#{field_name}_#{direction}"
-  end
-
-  def index_key(entity_name, field_name, direction, {pf_key, pf_val}) do
-    "#{entity_name}[#{pf_key}=#{pf_val}]#{field_name}_#{direction}"
-  end
-
-  # Cache key holding unique values for a given entity, field, and prefilter.
-  @spec unique_values_key(atom, prefilter, atom, :counts | :list) :: String.t()
-  defp unique_values_key(entity_name, nil, field_name, mode) do
-    "unique_#{mode}_#{entity_name}[]#{field_name}"
-  end
-
-  defp unique_values_key(entity_name, {pf_key, pf_val}, field_name, mode) do
-    "unique_#{mode}_#{entity_name}[#{pf_key}=#{pf_val}]#{field_name}"
-  end
-
-  # Return a list of all `:id` elements from the `collection`.
-  @spec id_list([record]) :: [id]
-  defp id_list(collection) do
-    Enum.map(collection, & &1.id)
-  end
-
   @doc "Get an entity by id from the index."
   @spec get(t, atom, id) :: any
   def get(index, entity_name, id) do
@@ -334,41 +229,27 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure."
-  @spec get_index(t, atom, atom, :asc | :desc, prefilter) :: [id]
+  @spec get_index(t, atom, atom, :asc | :desc, prefilter) :: list | map
   def get_index(index, entity_name, field_name, direction, prefilter \\ nil) do
     get_index(index, index_key(entity_name, field_name, direction, prefilter))
   end
 
-  # Get an index data structure by key (see `index_key/4`).
-  @spec get_index(t, String.t()) :: [id]
-  defp get_index(index, index_name) do
-    case :ets.lookup(index.index_ref, index_name) do
-      [{^index_name, val}] -> val
-      [] -> raise "No such index: #{index_name}"
-    end
+  @doc """
+  For the given `prefilter`, get a list (sorted ascending) of unique values
+  for `field_name` under `entity_name`.
+  """
+  @spec get_uniques_list(t, atom, atom, prefilter) :: [any]
+  def get_uniques_list(index, entity_name, field_name, prefilter \\ nil) do
+    get_index(index, unique_values_key(entity_name, prefilter, field_name, :list))
   end
 
   @doc """
-  For the given `prefilter`, get a list of unique values for `field_name`
-  under `entity_name`.
-
-  Use one of the following for the last argument, `mode`:
-
-  * `:counts` - used to store a map with values as keys and the number of
-    occurrences across the records as vals.
-  * `:list` (default) - used to store a list of the values, sorted ascending.
+  For the given `prefilter`, get a map where keys are unique values for
+  `field_name` under `entity_name` and vals are occurrence counts.
   """
-  @spec get_unique_values(t, atom, atom, prefilter, :counts | :list) :: counts_map | [any]
-  def get_unique_values(index, entity_name, field_name, prefilter \\ nil, mode \\ :list) do
-    get_index(index, unique_values_key(entity_name, prefilter, field_name, mode))
-  end
-
-  # Get counts_map and list versions of a unique values list at the same time.
-  @spec get_uniques_bundle(t, atom, atom, prefilter) :: uniques_bundle
-  defp get_uniques_bundle(index, entity_name, field_name, prefilter) do
-    counts_map = get_unique_values(index, entity_name, field_name, prefilter, :counts)
-    list = get_unique_values(index, entity_name, field_name, prefilter, :list)
-    {counts_map, list}
+  @spec get_uniques_map(t, atom, atom, prefilter) :: counts_map
+  def get_uniques_map(index, entity_name, field_name, prefilter \\ nil) do
+    get_index(index, unique_values_key(entity_name, prefilter, field_name, :counts))
   end
 
   @doc """
@@ -385,12 +266,6 @@ defmodule Indexed do
     index
     |> get_index(entity_name, order_field, order_direction, opts[:prefilter])
     |> Enum.map(&get(index, entity_name, &1))
-  end
-
-  # Insert a record into the cached data. (Indexes still need updating.)
-  @spec put(t, atom, record) :: true
-  defp put(index, entity_name, %{id: id} = record) do
-    :ets.insert(Map.fetch!(index.entities, entity_name).ref, {id, record})
   end
 
   @doc """
@@ -524,52 +399,5 @@ defmodule Indexed do
     #     warm_prefilter(index.index_ref, entity_name, pf_key, entity.fields, data_tuple)
     #   end
     # end)
-  end
-
-  # Remove `value` from the `field_name` unique values tally for the given
-  # entity/prefilter.
-  @spec remove_unique(uniques_bundle, any) :: uniques_bundle
-  defp remove_unique({counts_map, list}, value) do
-    case Map.fetch!(counts_map, value) do
-      1 -> {Map.delete(counts_map, value), list -- [value]}
-      n -> {Map.put(counts_map, value, n - 1), nil}
-    end
-  end
-
-  # Add a value to the uniques: in ETS and in the returned bundle.
-  @spec add_unique(uniques_bundle, any) :: uniques_bundle
-  defp add_unique({counts_map, list}, value) do
-    case counts_map[value] do
-      nil ->
-        first_bigger_idx = Enum.find_index(list, &(&1 > value))
-        new_list = List.insert_at(list, first_bigger_idx || 0, value)
-        new_counts_map = Map.put(counts_map, value, 1)
-        {new_counts_map, new_list}
-
-      orig_count ->
-        {Map.put(counts_map, value, orig_count + 1), nil}
-    end
-  end
-
-  # Add the id of `record` to the list of descending ids, sorting by `field`.
-  @spec insert_by([id], record, atom, Entity.field(), t) :: [id]
-  defp insert_by(old_desc_ids, record, entity_name, {name, opts}, index) do
-    find_fun =
-      case opts[:sort] do
-        :date_time ->
-          fn id ->
-            val = Map.get(get(index, entity_name, id), name)
-            :lt == DateTime.compare(val, Map.get(record, name))
-          end
-
-        nil ->
-          this_value = Map.get(record, name)
-          &(Map.get(get(index, entity_name, &1), name) < this_value)
-          # &(Map.get(get(index, entity_name, &1), name) < Map.get(record, name))
-      end
-
-    first_smaller_idx = Enum.find_index(old_desc_ids, find_fun)
-
-    List.insert_at(old_desc_ids, first_smaller_idx || -1, record.id)
   end
 end

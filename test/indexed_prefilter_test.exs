@@ -33,18 +33,18 @@ defmodule IndexedPrefilterTest do
 
   test "counts_map", %{index: index} do
     assert %{"CD" => 2, "FLAC" => 2, "Vinyl" => 1} ==
-             Indexed.get_unique_values(index, :albums, :media, nil, :counts)
+             Indexed.get_uniques_map(index, :albums, :media, nil)
 
     assert ["CD", "FLAC", "Vinyl"] ==
-             Indexed.get_unique_values(index, :albums, :media, nil, :list)
+             Indexed.get_uniques_list(index, :albums, :media, nil)
 
     prefilter = {:label, "Hospital Records"}
 
     assert %{"CD" => 1, "FLAC" => 2} ==
-             Indexed.get_unique_values(index, :albums, :media, prefilter, :counts)
+             Indexed.get_uniques_map(index, :albums, :media, prefilter)
 
     assert ["CD", "FLAC"] ==
-             Indexed.get_unique_values(index, :albums, :media, prefilter, :list)
+             Indexed.get_uniques_list(index, :albums, :media, prefilter)
   end
 
   test "basic prefilter", %{index: index} do
@@ -74,19 +74,19 @@ defmodule IndexedPrefilterTest do
              )
   end
 
-  test "get_unique_values", %{index: index} do
+  test "get_uniques_list", %{index: index} do
     # This is available because prefilter field keys imply manage_uniques on
     # the top level (prefilter nil).
     assert ["Hospital Records", "Liquid V Recordings"] ==
-             Indexed.get_unique_values(index, :albums, :label)
+             Indexed.get_uniques_list(index, :albums, :label)
 
     # manage_uniques for media was defined on top level (prefilter nil).
     assert ~w(CD FLAC Vinyl) ==
-             Indexed.get_unique_values(index, :albums, :media)
+             Indexed.get_uniques_list(index, :albums, :media)
 
     # Get unique media values behind the "label=Hospital Records" prefilter.
     assert ~w(CD FLAC) ==
-             Indexed.get_unique_values(index, :albums, :media, {:label, "Hospital Records"})
+             Indexed.get_uniques_list(index, :albums, :media, {:label, "Hospital Records"})
   end
 
   describe "looks good after adding a record" do
@@ -117,9 +117,9 @@ defmodule IndexedPrefilterTest do
                )
     end
 
-    test "get_unique_values", %{index: index} do
+    test "get_uniques_list", %{index: index} do
       assert ["Hospital Records", "Liquid V Recordings"] ==
-               Indexed.get_unique_values(index, :albums, :label)
+               Indexed.get_uniques_list(index, :albums, :label)
     end
   end
 
@@ -150,12 +150,12 @@ defmodule IndexedPrefilterTest do
                )
     end
 
-    test "get_unique_values", %{index: index} do
+    test "get_uniques_list", %{index: index} do
       assert ["Hospital Records", "Liquid V Recordings"] ==
-               Indexed.get_unique_values(index, :albums, :label)
+               Indexed.get_uniques_list(index, :albums, :label)
 
-      assert ~w(8-track FLAC) ==
-               Indexed.get_unique_values(index, :albums, :media, {:label, "Hospital Records"})
+      assert ["8-track", "FLAC"] ==
+               Indexed.get_uniques_list(index, :albums, :media, {:label, "Hospital Records"})
     end
   end
 end
