@@ -3,6 +3,7 @@ defmodule Indexed do
   Tools for creating an index module.
   """
   import Indexed.Helpers
+  alias Indexed.Entity
   alias __MODULE__
 
   @ets_opts [read_concurrency: true]
@@ -26,9 +27,6 @@ defmodule Indexed do
     * `nil` (default) - `Enum.sort/1` will be used.
   """
   @type field_config :: {field_name :: atom, opts :: keyword}
-
-  @typedoc "Configuration info for a prefilter."
-  @type prefilter_config :: {atom, opts :: keyword}
 
   @typedoc "Occurrences of each value (map key) under a prefilter."
   @type counts_map :: %{any => non_neg_integer}
@@ -54,36 +52,6 @@ defmodule Indexed do
   and are not kept in state.
   """
   @type prefilter :: {atom, any} | nil
-
-  defmodule Entity do
-    @moduledoc "Configuration for a type of thing to be indexed."
-    defstruct fields: [], prefilters: [], ref: nil
-
-    @typedoc """
-    * `:fields` - List of `t:field/0`s to be indexed for this entity.
-    * `:prefilters` - List of tuples indicating which fields should be
-      prefiltered on. This means that separate indexes will be managed for each
-      unique value for each of these fields, across all records of this entity
-      type. Each two-element tuple has the field name atom and a keyword list
-      of options. Allowed options:
-      * `:maintain_unique` - List of field name atoms for which a list of
-        unique values under the prefilter will be managed. These lists can be
-        fetched via `get_unique_values/4`.
-    * `:ref` - ETS table reference where records of this entity type are
-      stored, keyed by id.
-    """
-    @type t :: %__MODULE__{
-            fields: [field],
-            prefilters: [Indexed.prefilter_config()],
-            ref: :ets.tid()
-          }
-
-    @typedoc """
-    A field to be indexed. 2-element tuple has the field name, followed by a
-    sorting strategy, :date or nil for simple sort.
-    """
-    @type field :: {atom, keyword}
-  end
 
   defstruct entities: %{}, index_ref: nil
 
@@ -163,7 +131,8 @@ defmodule Indexed do
   # If `pf_key` is a field name atom to prefilter on, then group the given data
   #   by that field. For each grouping, a full set of indexes for each
   #   field/value pair will be created. Unique values list is updated, too.
-  @spec warm_prefilter(:ets.tid(), atom, prefilter_config, [Entity.field()], data_tuple) :: :ok
+  @spec warm_prefilter(:ets.tid(), atom, Entity.prefilter_config(), [Entity.field()], data_tuple) ::
+          :ok
   defp warm_prefilter(
          index_ref,
          entity_name,
