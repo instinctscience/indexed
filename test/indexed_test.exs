@@ -15,7 +15,7 @@ defmodule IndexedTest do
   end
 
   defp add_tesla(index),
-    do: Indexed.set_record(index, :cars, %Car{id: 3, make: "Tesla"}, already_held?: false)
+    do: Indexed.set_record(index, :cars, %Car{id: 3, make: "Tesla"}, new_record?: true)
 
   test "get", %{index: index} do
     assert %Car{id: 1, make: "Lamborghini"} == Indexed.get(index, :cars, 1)
@@ -28,26 +28,15 @@ defmodule IndexedTest do
   end
 
   describe "set_record" do
-    test "without already_held? hint, but it is already held", %{index: index} do
+    test "without new_record? hint, but it is already held", %{index: index} do
       car = Indexed.get(index, :cars, 1)
       Indexed.set_record(index, :cars, %{car | make: "Lambo"})
       assert %Car{id: 1, make: "Lambo"} == Indexed.get(index, :cars, 1)
     end
 
-    test "without already_held? hint, but it is not already held", %{index: index} do
+    test "without new_record? hint, but it is not already held", %{index: index} do
       Indexed.set_record(index, :cars, %Car{id: 4, make: "GM"})
       assert %Car{id: 4, make: "GM"} == Indexed.get(index, :cars, 4)
-    end
-
-    test "with already_held? hint, true", %{index: index} do
-      car = Indexed.get(index, :cars, 1)
-      Indexed.set_record(index, :cars, %{car | make: "Lambo"}, already_held?: true)
-      assert %Car{id: 1, make: "Lambo"} == Indexed.get(index, :cars, 1)
-    end
-
-    test "with already_held? hint, false", %{index: index} do
-      Indexed.set_record(index, :cars, %Car{id: 5, make: "Ford"}, already_held?: false)
-      assert %Car{id: 5, make: "Ford"} == Indexed.get(index, :cars, 5)
     end
   end
 

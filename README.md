@@ -54,14 +54,12 @@ index =
 
 %Car{id: 1, make: "Lamborghini"} = car = Indexed.get(index, :cars, 1)
 
-# `true` is a hint that the record is already held in the cache,
-# speeding the operation a bit.
-Indexed.set_record(index, :cars, %{car | make: "Lambo"}, true)
+Indexed.set_record(index, :cars, %{car | make: "Lambo"})
 
 %Car{id: 1, make: "Lambo"} = Indexed.get(index, :cars, 1)
 
-# `false` indicates that we know for sure the car didn't exist before.
-Indexed.set_record(index, :cars, %Car{id: 3, make: "Tesla"}, false)
+# `new_record?: true` - the record didn't exist before - checking is skipped.
+Indexed.set_record(index, :cars, %Car{id: 3, make: "Tesla"}, new_record?: true)
 
 %Car{id: 3, make: "Tesla"} = Indexed.get(index, :cars, 3)
 

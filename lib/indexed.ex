@@ -40,11 +40,13 @@ defmodule Indexed do
   @type id :: any
 
   @typedoc """
-  An aligning counts_map and list of its keys. Bonus: when passed into
-  `put_uniques_bundle/5`, `nil` for the list indicates that it should not be
-  saved.
+  An aligning counts_map and list of its keys.
+
+  The third argument is a boolean which will be set to `true` if the list has
+  been updated and should be saved by `Helpers.put_uniques_bundle/5`. The Map
+  is always updated in this function.
   """
-  @type uniques_bundle :: {counts_map, list :: [any] | nil}
+  @type uniques_bundle :: {counts_map, list :: [any] | nil, list_updated? :: boolean}
 
   @typedoc """
   Field name and value for which separate indexes for each field should be
@@ -169,21 +171,6 @@ defmodule Indexed do
          fields,
          {d_dir, d_name, full_data}
        ) do
-    # Save list of unique values for each field configured by :maintain_unique.
-    store_all_uniques = fn prefilter, data ->
-      Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
-        {counts_map, list} =
-          Enum.reduce(data, {%{}, []}, fn record, {counts_map, list} ->
-            val = Map.get(record, field_name)
-            num = Map.get(counts_map, val, 0) + 1
-            {Map.put(counts_map, val, num), [val | list]}
-          end)
-
-        bundle = {counts_map, Enum.sort(Enum.uniq(list))}
-        put_uniques_bundle(bundle, index_ref, entity_name, prefilter, field_name)
-      end)
-    end
-
     warm_index = fn prefilter, field, data ->
       data_tuple = {d_dir, d_name, data}
       warm_index(index_ref, entity_name, prefilter, field, data_tuple)
@@ -194,7 +181,7 @@ defmodule Indexed do
 
       # Store :maintain_unique fields on the nil prefilter. Other prefilters
       # imply a unique index and are handled when they are processed below.
-      store_all_uniques.(nil, full_data)
+      store_all_uniques(index_ref, entity_name, nil, pf_opts, full_data)
     else
       grouped = Enum.group_by(full_data, &Map.get(&1, pf_key))
 
@@ -207,16 +194,32 @@ defmodule Indexed do
           {Map.put(counts_map, pf_val, length(records)), [pf_val | list]}
         end)
 
-      bundle = {counts_map, Enum.sort(Enum.uniq(list))}
+      bundle = {counts_map, Enum.sort(Enum.uniq(list)), true}
       put_uniques_bundle(bundle, index_ref, entity_name, nil, pf_key)
 
       # For each value found for the prefilter, create a set of indexes.
       Enum.each(grouped, fn {pf_val, data} ->
         prefilter = {pf_key, pf_val}
         Enum.each(fields, &warm_index.(prefilter, &1, data))
-        store_all_uniques.(prefilter, data)
+        store_all_uniques(index_ref, entity_name, prefilter, pf_opts, data)
       end)
     end
+  end
+
+  # Save list of unique values for each field configured by :maintain_unique.
+  @spec store_all_uniques(:ets.tid(), atom, prefilter, keyword, [record]) :: :ok
+  defp store_all_uniques(index_ref, entity_name, prefilter, pf_opts, data) do
+    Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
+      {counts_map, list} =
+        Enum.reduce(data, {%{}, []}, fn record, {counts_map, list} ->
+          val = Map.get(record, field_name)
+          num = Map.get(counts_map, val, 0) + 1
+          {Map.put(counts_map, val, num), [val | list]}
+        end)
+
+      bundle = {counts_map, Enum.sort(Enum.uniq(list)), true}
+      put_uniques_bundle(bundle, index_ref, entity_name, prefilter, field_name)
+    end)
   end
 
   @doc "Get an entity by id from the index."
@@ -271,133 +274,126 @@ defmodule Indexed do
   @doc """
   Add or update a record, along with the indexes to reflect the change.
 
-  If it is known for sure whether or not the record was previously held in
-  cache, include the `already_held?` argument to speed the operation
-  slightly.
+  ## Options
+
+  * `:new_record?` - If true, it will be assumed that the record was not
+    previously held. This can speed the operation a bit.
   """
   @spec set_record(t, atom, record, keyword) :: :ok
-  def set_record(%{index_ref: index_ref} = index, entity_name, record, opts \\ []) do
-    entity = Map.fetch!(index.entities, entity_name)
-    previous = opts[:already_held?] != false && get(index, entity_name, record.id)
+  def set_record(index, entity_name, record, opts \\ []) do
+    %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
+
+    # previous = get(index, entity_name, record.id)
+    previous = if opts[:new_record?], do: nil, else: get(index, entity_name, record.id)
+    # previous = opts[:already_held?] != false && get(index, entity_name, record.id)
 
     # Update the record itself (by id).
     put(index, entity_name, record)
 
-    # nil prefilter
-
     Enum.each(entity.prefilters, fn
       {nil, pf_opts} ->
-        nil
+        update_index_for_fields(index, entity_name, nil, fields, previous, record)
+        update_for_maintain_unique(index, entity_name, pf_opts, nil, previous, record)
 
       {pf_key, pf_opts} ->
-        {_, list} = bundle = get_uniques_bundle(index, entity_name, pf_key, nil)
+        # Get global (prefilter nil) uniques bundle.
+        {_, list, _} = bundle = get_uniques_bundle(index, entity_name, pf_key, nil)
 
-        # For each unique value under pf_key...
+        # For each unique value under pf_key, updated uniques.
         Enum.each(list, fn value ->
-          # Get and update global (prefilter nil) uniques for the pf field.
-          cond do
-            previous && Map.get(previous, pf_key) == Map.get(record, pf_key) ->
-              # For this prefilter key, record hasn't moved. Do nothing.
-              nil
-
-            previous && previous[pf_key] == value ->
-              # Record was moved to another prefilter. Remove it from this one.
-              bundle
-              |> remove_unique(value)
-              |> put_uniques_bundle(index_ref, entity_name, nil, pf_key)
-
-            record[pf_key] == value ->
-              # Record was moved to this prefilter. Add it.
-              bundle
-              |> add_unique(value)
-              |> put_uniques_bundle(index_ref, entity_name, nil, pf_key)
-
-            true ->
-              nil
-          end
+          update_uniques_for_global_prefilter(
+            index,
+            entity_name,
+            pf_key,
+            bundle,
+            value,
+            previous,
+            record
+          )
 
           prefilter = {pf_key, value}
 
-          # Update indexes for each field under the current prefilter.
-          Enum.each(entity.fields, fn {field_name, _} = field ->
-            asc_key = index_key(entity_name, field_name, :asc, prefilter)
-            desc_key = index_key(entity_name, field_name, :desc, prefilter)
-            desc_ids = get_index(index, desc_key)
-
-            # Remove the id from the list if it exists; insert it for sure.
-            desc_ids = if previous, do: desc_ids -- [record.id], else: desc_ids
-            desc_ids = insert_by(desc_ids, record, entity_name, field, index)
-
-            :ets.insert(index_ref, {desc_key, desc_ids})
-            :ets.insert(index_ref, {asc_key, Enum.reverse(desc_ids)})
-          end)
-
-          # Update any configured :maintain_uniques fields for this prefilter.
-          Enum.each(pf_opts[:maintain_unique] || [], fn
-            field_name ->
-              bundle = get_uniques_bundle(index, entity_name, field_name, prefilter)
-              new_value = Map.get(record, field_name)
-
-              new_bundle =
-                if previous && Map.get(previous, field_name) != new_value,
-                  do: remove_unique(bundle, Map.get(previous, field_name)),
-                  else: bundle
-
-              new_bundle
-              |> add_unique(new_value)
-              |> put_uniques_bundle(index_ref, entity_name, prefilter, field_name)
-          end)
+          update_index_for_fields(index, entity_name, prefilter, fields, previous, record)
+          update_for_maintain_unique(index, entity_name, pf_opts, prefilter, previous, record)
         end)
-
-        # cond do
-        #   previous && previous[pf_key] != record[pf_key] ->
-        #     remove_unique(index_ref, entity_name, nil, pf_key, previous[pf_key], bundle)
-        #     add_unique(index_ref, entity_name, nil, pf_key, record[pf_key], bundle)
-        #     # prefilter = {pf_key, previous[pf_key]}
-
-        #     # put_uniques_bundle(index_ref, entity_name, prefilter, field_name, counts_map, list)
-
-        #     # previous && previous[pf_key] == record[pf_key] ->
-        # end
-
-        # # unless previous && previous[pf_key] == record[pf_key] do
-        # # end
-        # # Enum.each(entity.fields, fn {field_name, field_opts} ->
-        # #   if !previous || previous[field_name] != record[field_name] do
-        # #   key = index_key(entity_name, field_name,)
-        # # end)
     end)
+  end
 
-    # # Update the no-prefilter index.
+  # Get and update global (prefilter nil) uniques for the pf field.
+  @spec update_uniques_for_global_prefilter(
+          t,
+          atom,
+          atom,
+          uniques_bundle,
+          any,
+          record | nil,
+          record
+        ) :: :ok
+  defp update_uniques_for_global_prefilter(
+         %{index_ref: index_ref},
+         entity_name,
+         pf_key,
+         bundle,
+         value,
+         previous,
+         record
+       ) do
+    cond do
+      previous && Map.get(previous, pf_key) == Map.get(record, pf_key) ->
+        # For this prefilter key, record hasn't moved. Do nothing.
+        nil
 
-    # Enum.each(entity.fields, fn {name, _sort_hint} = field ->
-    #   desc_key = index_key(entity_name, name, :desc)
-    #   desc_ids = get_index(index, desc_key)
+      previous && previous[pf_key] == value ->
+        # Record was moved to another prefilter. Remove it from this one.
+        bundle
+        |> remove_unique(value)
+        |> put_uniques_bundle(index_ref, entity_name, nil, pf_key)
 
-    #   # Remove the id from the list if it exists.
-    #   desc_ids =
-    #     if previous,
-    #       do: Enum.reject(desc_ids, &(&1 == record.id)),
-    #       else: desc_ids
+      Map.get(record, pf_key) == value ->
+        # Record was moved to this prefilter. Add it.
+        bundle
+        |> add_unique(value)
+        |> put_uniques_bundle(index_ref, entity_name, nil, pf_key)
 
-    #   desc_ids = insert_by(desc_ids, record, entity_name, field, index)
+      true ->
+        nil
+    end
 
-    #   put_index(index, desc_key, desc_ids)
-    #   put_index(index, index_key(entity_name, name, :asc), Enum.reverse(desc_ids))
-    # end)
+    :ok
+  end
 
-    # # Update the prefilter indexes.
-    # Enum.each(entity.prefilters, fn prefilter ->
-    #   # Synthesize a data tuple based on any field we actually index.
-    #   {some_field, _} = hd(entity.fields)
-    #   some_field_desc_ids = get_index(index, entity_name, some_field, :desc)
-    #   full_data = Enum.map(some_field_desc_ids, &get(index, entity_name, &1))
-    #   data_tuple = {:desc, some_field, full_data}
+  # Update indexes for each field under the prefilter.
+  @spec update_index_for_fields(t, atom, prefilter, [Entity.field()], record | nil, record) :: :ok
+  defp update_index_for_fields(index, entity_name, prefilter, fields, previous, record) do
+    Enum.each(fields, fn {field_name, _} = field ->
+      asc_key = index_key(entity_name, field_name, :asc, prefilter)
+      desc_key = index_key(entity_name, field_name, :desc, prefilter)
+      desc_ids = get_index(index, desc_key)
 
-    #   # Update the cache for each configured prefilter.
-    #   for pf_key <- entity.prefilters do
-    #     warm_prefilter(index.index_ref, entity_name, pf_key, entity.fields, data_tuple)
-    #   end
-    # end)
+      # Remove the id from the list if it exists; insert it for sure.
+      desc_ids = if previous, do: desc_ids -- [record.id], else: desc_ids
+      desc_ids = insert_by(desc_ids, record, entity_name, field, index)
+
+      :ets.insert(index.index_ref, {desc_key, desc_ids})
+      :ets.insert(index.index_ref, {asc_key, Enum.reverse(desc_ids)})
+    end)
+  end
+
+  # Update any configured :maintain_uniques fields for this prefilter.
+  @spec update_for_maintain_unique(t, atom, keyword, prefilter, record | nil, record) :: :ok
+  defp update_for_maintain_unique(index, entity_name, pf_opts, prefilter, previous, record) do
+    Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
+      bundle = get_uniques_bundle(index, entity_name, field_name, prefilter)
+      new_value = Map.get(record, field_name)
+
+      new_bundle =
+        if previous && Map.get(previous, field_name) != new_value,
+          do: remove_unique(bundle, Map.get(previous, field_name)),
+          else: bundle
+
+      new_bundle
+      |> add_unique(new_value)
+      |> put_uniques_bundle(index.index_ref, entity_name, prefilter, field_name)
+    end)
   end
 end

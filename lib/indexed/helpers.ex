@@ -50,8 +50,14 @@ defmodule Indexed.Helpers do
   @doc "Store two indexes for unique value tracking."
   @spec put_uniques_bundle(Indexed.uniques_bundle(), :ets.tid(), atom, Indexed.prefilter(), atom) ::
           true
-  def put_uniques_bundle({counts_map, list}, index_ref, entity_name, prefilter, field_name) do
-    if list do
+  def put_uniques_bundle(
+        {counts_map, list, list_updated?},
+        index_ref,
+        entity_name,
+        prefilter,
+        field_name
+      ) do
+    if list_updated? do
       list_key = unique_values_key(entity_name, prefilter, field_name, :list)
       :ets.insert(index_ref, {list_key, list})
     end
@@ -137,7 +143,7 @@ defmodule Indexed.Helpers do
   def get_uniques_bundle(index, entity_name, field_name, prefilter) do
     map = Indexed.get_uniques_map(index, entity_name, field_name, prefilter)
     list = Indexed.get_uniques_list(index, entity_name, field_name, prefilter)
-    {map, list}
+    {map, list, false}
   end
 
   @doc "Insert a record into the cached data. (Indexes still need updating.)"
@@ -151,25 +157,25 @@ defmodule Indexed.Helpers do
   entity/prefilter.
   """
   @spec remove_unique(Indexed.uniques_bundle(), any) :: Indexed.uniques_bundle()
-  def remove_unique({counts_map, list}, value) do
+  def remove_unique({counts_map, list, list_updated?}, value) do
     case Map.fetch!(counts_map, value) do
-      1 -> {Map.delete(counts_map, value), list -- [value]}
-      n -> {Map.put(counts_map, value, n - 1), nil}
+      1 -> {Map.delete(counts_map, value), list -- [value], true}
+      n -> {Map.put(counts_map, value, n - 1), list, list_updated?}
     end
   end
 
   # Add a value to the uniques: in ETS and in the returned bundle.
   @spec add_unique(Indexed.uniques_bundle(), any) :: Indexed.uniques_bundle()
-  def add_unique({counts_map, list}, value) do
+  def add_unique({counts_map, list, list_updated?}, value) do
     case counts_map[value] do
       nil ->
         first_bigger_idx = Enum.find_index(list, &(&1 > value))
         new_list = List.insert_at(list, first_bigger_idx || 0, value)
         new_counts_map = Map.put(counts_map, value, 1)
-        {new_counts_map, new_list}
+        {new_counts_map, new_list, true}
 
       orig_count ->
-        {Map.put(counts_map, value, orig_count + 1), nil}
+        {Map.put(counts_map, value, orig_count + 1), list, list_updated?}
     end
   end
 
