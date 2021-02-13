@@ -92,7 +92,7 @@ defmodule IndexedPrefilterTest do
   describe "looks good after adding a record" do
     setup %{index: index} do
       album = %{id: 6, label: "Hospital Records", media: "Minidisc", artist: "Bop"}
-      Indexed.set_record(index, :albums, album)
+      Indexed.put(index, :albums, album)
       [album: album]
     end
 
@@ -126,7 +126,7 @@ defmodule IndexedPrefilterTest do
   describe "looks good after updating a record" do
     setup %{index: index} do
       album = %Album{id: 2, label: "Hospital Records", media: "8-track", artist: "Logistics"}
-      Indexed.set_record(index, :albums, album)
+      Indexed.put(index, :albums, album)
       [album: album]
     end
 

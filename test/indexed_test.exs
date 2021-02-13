@@ -15,7 +15,7 @@ defmodule IndexedTest do
   end
 
   defp add_tesla(index),
-    do: Indexed.set_record(index, :cars, %Car{id: 3, make: "Tesla"}, new_record?: true)
+    do: Indexed.put(index, :cars, %Car{id: 3, make: "Tesla"}, new_record?: true)
 
   test "get", %{index: index} do
     assert %Car{id: 1, make: "Lamborghini"} == Indexed.get(index, :cars, 1)
@@ -27,15 +27,15 @@ defmodule IndexedTest do
              Indexed.get_values(index, :cars, :make, :asc)
   end
 
-  describe "set_record" do
+  describe "put" do
     test "without new_record? hint, but it is already held", %{index: index} do
       car = Indexed.get(index, :cars, 1)
-      Indexed.set_record(index, :cars, %{car | make: "Lambo"})
+      Indexed.put(index, :cars, %{car | make: "Lambo"})
       assert %Car{id: 1, make: "Lambo"} == Indexed.get(index, :cars, 1)
     end
 
     test "without new_record? hint, but it is not already held", %{index: index} do
-      Indexed.set_record(index, :cars, %Car{id: 4, make: "GM"})
+      Indexed.put(index, :cars, %Car{id: 4, make: "GM"})
       assert %Car{id: 4, make: "GM"} == Indexed.get(index, :cars, 4)
     end
   end
@@ -102,12 +102,12 @@ defmodule IndexedTest do
 
     # `true` is a hint that the record is already held in the cache,
     # speeding the operation a bit.
-    Indexed.set_record(index, :cars, %{car | make: "Lambo"}, already_held?: true)
+    Indexed.put(index, :cars, %{car | make: "Lambo"})
 
     assert %Car{id: 1, make: "Lambo"} = Indexed.get(index, :cars, 1)
 
     # `false` indicates that we know for sure the car didn't exist before.
-    Indexed.set_record(index, :cars, %Car{id: 3, make: "Tesla"}, already_held?: false)
+    Indexed.put(index, :cars, %Car{id: 3, make: "Tesla"}, new_record?: true)
 
     assert %Car{id: 3, make: "Tesla"} = Indexed.get(index, :cars, 3)
 

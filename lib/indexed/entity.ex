@@ -24,8 +24,14 @@ defmodule Indexed.Entity do
   @typedoc """
   A field to be indexed. 2-element tuple has the field name, followed by a
   sorting strategy, :date or nil for simple sort.
+
+  ## Options
+
+  * `:sort` - Indicates how the field should be sorted in ascending order:
+    * `:date_time` - `DateTime.compare/2` should be used for sorting.
+    * `nil` (default) - `Enum.sort/1` will be used.
   """
-  @type field :: {atom, keyword}
+  @type field :: {name :: atom, opts :: keyword}
 
   @typedoc "Configuration info for a prefilter."
   @type prefilter_config :: {atom, opts :: keyword}
