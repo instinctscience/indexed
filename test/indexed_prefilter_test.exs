@@ -104,6 +104,17 @@ defmodule IndexedPrefilterTest do
                %{artist: "S.P.Y"}
              ] = Indexed.get_values(index, :albums, :artist, :asc, {:label, "Hospital Records"})
     end
+
+    test "when a resort is needed within the same prefilter", %{index: index} do
+      album = %Album{id: 3, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
+      Indexed.put(index, :albums, album)
+
+      assert [
+               %{artist: "Logistics"},
+               %{artist: "S.P.Y"},
+               %{artist: "Whiney"}
+             ] = Indexed.get_values(index, :albums, :artist, :asc, {:label, "Hospital Records"})
+    end
   end
 
   describe "get_uniques_list" do
@@ -127,7 +138,7 @@ defmodule IndexedPrefilterTest do
       map = &Indexed.get_uniques_map(index, :albums, :media, &1)
 
       album = %Album{id: 7, label: "RAM Records", media: "Phonograph", artist: "Andy C"}
-      Indexed.put(index, :albums, album, new_record?: true)
+      Indexed.put(index, :albums, album)
 
       assert ["Phonograph"] == list.({:label, "RAM Records"})
       assert %{"Phonograph" => 1} == map.({:label, "RAM Records"})
@@ -137,7 +148,7 @@ defmodule IndexedPrefilterTest do
       list = &Indexed.get_uniques_list(index, :albums, :media, &1)
 
       album = %Album{id: 7, label: "RAM Records", media: "Phonograph", artist: "Andy C"}
-      Indexed.put(index, :albums, album, new_record?: true)
+      Indexed.put(index, :albums, album)
 
       album = %Album{id: 7, label: "A New Label", media: "Phonograph", artist: "Andy C"}
       Indexed.put(index, :albums, album)

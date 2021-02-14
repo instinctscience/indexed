@@ -29,7 +29,7 @@ defmodule Indexed do
           index_ref: :ets.tid()
         }
 
-  defdelegate put(index, entity_name, record, opts \\ []), to: Indexed.Actions.Put, as: :run
+  defdelegate put(index, entity_name, record), to: Indexed.Actions.Put, as: :run
   defdelegate warm(args), to: Indexed.Actions.Warm, as: :run
   defdelegate paginate(index, entity_name, params), to: Indexed.Paginator
 

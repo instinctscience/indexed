@@ -23,8 +23,8 @@ defmodule Indexed.Actions.Put do
   @doc """
   Add or update a record, along with the indexes to reflect the change.
   """
-  @spec run(Indexed.t(), atom, Indexed.record(), keyword) :: :ok
-  def run(index, entity_name, record, _opts \\ []) do
+  @spec run(Indexed.t(), atom, Indexed.record()) :: :ok
+  def run(index, entity_name, record) do
     %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
     previous = Indexed.get(index, entity_name, record.id)
 
@@ -94,43 +94,55 @@ defmodule Indexed.Actions.Put do
     %{previous: previous, record: record} = put
 
     Enum.each(fields, fn {field_name, _} = field ->
-      asc_key = Indexed.index_key(put.entity_name, field_name, :asc, prefilter)
-      desc_key = Indexed.index_key(put.entity_name, field_name, :desc, prefilter)
       record_under_prefilter = under_prefilter?(record, prefilter)
       prev_under_prefilter = previous && under_prefilter?(previous, prefilter)
       record_value = Map.get(record, field_name)
       prev_value = previous && Map.get(previous, field_name)
 
-      desc_ids = fn ->
-        if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
-      end
-
-      save = fn desc_ids ->
-        :ets.insert(put.index.index_ref, {desc_key, desc_ids})
-        :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(desc_ids)})
-      end
-
-      cond do
-        previous && record_under_prefilter && prev_under_prefilter && record_value == prev_value ->
-          # still in same prefilter - the value (and thus sorting) remains.
-          nil
-
-        previous && record_under_prefilter && prev_under_prefilter ->
-          # Value differs, but we remain in the same prefilter. Remove & add.
-          save.(insert_by(put, desc_ids.() -- [record.id], field))
-
-        previous && prev_under_prefilter ->
-          # Record is moving out of this prefilter.
-          save.(desc_ids.() -- [record.id])
-
-        record_under_prefilter ->
+      if previous do
+        if record_under_prefilter && prev_under_prefilter do
+          if record_value != prev_value do
+            # Value differs, but we remain in the same prefilter. Remove & add.
+            put_index(put, field, prefilter, [:remove, :add], newly_seen_value?)
+          end
+        else
+          if prev_under_prefilter do
+            # Record is moving out of this prefilter.
+            put_index(put, field, prefilter, [:remove], newly_seen_value?)
+          end
+        end
+      else
+        if record_under_prefilter do
           # Record is moving into this prefilter.
-          save.(insert_by(put, desc_ids.(), field))
-
-        true ->
-          nil
+          put_index(put, field, prefilter, [:add], newly_seen_value?)
+        end
       end
     end)
+  end
+
+  @spec put_index(t, Entity.field(), Indexed.prefilter(), [atom], boolean) :: :ok
+  defp put_index(put, {field_name, _} = field, prefilter, actions, newly_seen_value?) do
+    asc_key = Indexed.index_key(put.entity_name, field_name, :asc, prefilter)
+    desc_key = Indexed.index_key(put.entity_name, field_name, :desc, prefilter)
+
+    desc_ids = fn desc_key ->
+      if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
+    end
+
+    save = fn desc_ids ->
+      :ets.insert(put.index.index_ref, {desc_key, desc_ids})
+      :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(desc_ids)})
+    end
+
+    new_desc_ids =
+      Enum.reduce(actions, desc_ids.(desc_key), fn
+        :remove, dids -> dids -- [put.record.id]
+        :add, dids -> insert_by(put, dids, field)
+      end)
+
+    save.(new_desc_ids)
+
+    :ok
   end
 
   # Update any configured :maintain_unique fields for this prefilter.
