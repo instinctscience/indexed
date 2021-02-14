@@ -22,16 +22,12 @@ defmodule Indexed.Actions.Put do
 
   @doc """
   Add or update a record, along with the indexes to reflect the change.
-
-  ## Options
-
-  * `:new_record?` - If true, it will be assumed that the record was not
-    previously held. This can speed the operation a bit.
   """
-  @spec put(Indexed.t(), atom, Indexed.record(), keyword) :: :ok
-  def put(index, entity_name, record, opts \\ []) do
+  @spec run(Indexed.t(), atom, Indexed.record(), keyword) :: :ok
+  def run(index, entity_name, record, _opts \\ []) do
     %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
-    previous = if opts[:new_record?], do: nil, else: Indexed.get(index, entity_name, record.id)
+    previous = Indexed.get(index, entity_name, record.id)
+
     put = %Put{entity_name: entity_name, index: index, previous: previous, record: record}
 
     # Update the record itself (by id).
@@ -39,41 +35,51 @@ defmodule Indexed.Actions.Put do
 
     Enum.each(entity.prefilters, fn
       {nil, pf_opts} ->
-        update_index_for_fields(put, nil, fields)
-        update_for_maintain_unique(put, pf_opts, nil)
+        update_index_for_fields(put, nil, fields, false)
+        update_for_maintain_unique(put, pf_opts, nil, false)
 
       {pf_key, pf_opts} ->
         # Get global (prefilter nil) uniques bundle.
-        {_, list, _} = bundle = get_uniques_bundle(put, pf_key, nil)
-        put = %{put | bundle: bundle}
+        %{bundle: {map, list, _}} = put = get_uniques_bundle(put, pf_key, nil)
+        record_value = Map.get(record, pf_key)
 
-        # For each unique value under pf_key, updated uniques.
-        Enum.each(list, fn value ->
+        fun = fn value, newly_seen_value? ->
           update_uniques_for_global_prefilter(put, pf_key, value)
 
           prefilter = {pf_key, value}
 
-          update_index_for_fields(put, prefilter, fields)
-          update_for_maintain_unique(put, pf_opts, prefilter)
-        end)
+          update_index_for_fields(put, prefilter, fields, newly_seen_value?)
+          update_for_maintain_unique(put, pf_opts, prefilter, newly_seen_value?)
+        end
+
+        # If record has a newly-seen prefilter value, add fresh indexes.
+        unless Map.has_key?(map, record_value), do: fun.(record_value, true)
+
+        # For each existing unique value for the prefilter field, update indexes.
+        Enum.each(list, &fun.(&1, false))
     end)
   end
 
-  # Get and update global (prefilter nil) uniques for the pf field.
+  # Get and update global (prefilter nil) uniques for the field_name.
+  # These field_names would be used as prefilter keys when querying prefilters.
+  # `value` is the current global prefilter value being iterated over.
   @spec update_uniques_for_global_prefilter(t, atom, any) :: :ok
-  defp update_uniques_for_global_prefilter(put, pf_key, value) do
+  defp update_uniques_for_global_prefilter(put, field_name, value) do
+    prev_value = put.previous && Map.get(put.previous, field_name)
+    new_value = Map.get(put.record, field_name)
+
     cond do
-      put.previous && Map.get(put.previous, pf_key) == Map.get(put.record, pf_key) ->
+      put.previous && prev_value == new_value ->
         # For this prefilter key, record hasn't moved. Do nothing.
         nil
 
-      put.previous && put.previous[pf_key] == value ->
+      put.previous && prev_value == value ->
         # Record was moved to another prefilter. Remove it from this one.
-        put |> remove_unique(value) |> put_uniques_bundle(nil, pf_key)
+        put |> remove_unique(value) |> put_uniques_bundle(nil, field_name)
 
-      Map.get(put.record, pf_key) == value ->
+      new_value == value ->
         # Record was moved to this prefilter. Add it.
-        put |> add_unique(value) |> put_uniques_bundle(nil, pf_key)
+        put |> add_unique(value) |> put_uniques_bundle(nil, field_name)
 
       true ->
         nil
@@ -83,56 +89,100 @@ defmodule Indexed.Actions.Put do
   end
 
   # Update indexes for each field under the prefilter.
-  @spec update_index_for_fields(t, Indexed.prefilter(), [Entity.field()]) :: :ok
-  defp update_index_for_fields(put, prefilter, fields) do
+  @spec update_index_for_fields(t, Indexed.prefilter(), [Entity.field()], boolean) :: :ok
+  defp update_index_for_fields(put, prefilter, fields, newly_seen_value?) do
+    %{previous: previous, record: record} = put
+
     Enum.each(fields, fn {field_name, _} = field ->
       asc_key = Indexed.index_key(put.entity_name, field_name, :asc, prefilter)
       desc_key = Indexed.index_key(put.entity_name, field_name, :desc, prefilter)
-      desc_ids = Indexed.get_index(put.index, desc_key)
+      record_under_prefilter = under_prefilter?(record, prefilter)
+      prev_under_prefilter = previous && under_prefilter?(previous, prefilter)
+      record_value = Map.get(record, field_name)
+      prev_value = previous && Map.get(previous, field_name)
 
-      # Remove the id from the list if it exists; insert it for sure.
-      desc_ids = if put.previous, do: desc_ids -- [put.record.id], else: desc_ids
-      desc_ids = insert_by(put, desc_ids, field)
+      desc_ids = fn ->
+        if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
+      end
 
-      :ets.insert(put.index.index_ref, {desc_key, desc_ids})
-      :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(desc_ids)})
+      save = fn desc_ids ->
+        :ets.insert(put.index.index_ref, {desc_key, desc_ids})
+        :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(desc_ids)})
+      end
+
+      cond do
+        previous && record_under_prefilter && prev_under_prefilter && record_value == prev_value ->
+          # still in same prefilter - the value (and thus sorting) remains.
+          nil
+
+        previous && record_under_prefilter && prev_under_prefilter ->
+          # Value differs, but we remain in the same prefilter. Remove & add.
+          save.(insert_by(put, desc_ids.() -- [record.id], field))
+
+        previous && prev_under_prefilter ->
+          # Record is moving out of this prefilter.
+          save.(desc_ids.() -- [record.id])
+
+        record_under_prefilter ->
+          # Record is moving into this prefilter.
+          save.(insert_by(put, desc_ids.(), field))
+
+        true ->
+          nil
+      end
     end)
   end
 
-  # Update any configured :maintain_uniques fields for this prefilter.
-  @spec update_for_maintain_unique(t, keyword, Indexed.prefilter()) :: :ok
-  defp update_for_maintain_unique(put, pf_opts, prefilter) do
+  # Update any configured :maintain_unique fields for this prefilter.
+  @spec update_for_maintain_unique(t, keyword, Indexed.prefilter(), boolean) :: :ok
+  defp update_for_maintain_unique(put, pf_opts, prefilter, newly_seen_value?) do
     Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
-      put = %{put | bundle: get_uniques_bundle(put, field_name, prefilter)}
+      put =
+        if newly_seen_value?,
+          do: %{put | bundle: {%{}, [], false}},
+          else: get_uniques_bundle(put, field_name, prefilter)
+
       new_value = Map.get(put.record, field_name)
+      previous_value = put.previous && Map.get(put.previous, field_name)
 
-      bundle =
-        if put.previous && Map.get(put.previous, field_name) != new_value,
-          do: remove_unique(put, Map.get(put.previous, field_name)).bundle,
-          else: put.bundle
+      put =
+        if put.previous do
+          put =
+            if under_prefilter?(put.previous, prefilter),
+              do: remove_unique(put, previous_value),
+              else: put
 
-      %{put | bundle: bundle}
-      |> add_unique(new_value)
-      |> put_uniques_bundle(prefilter, field_name)
+          if under_prefilter?(put.record, prefilter),
+            do: add_unique(put, new_value),
+            else: put
+        else
+          add_unique(put, new_value)
+        end
+
+      put_uniques_bundle(put, prefilter, field_name)
     end)
   end
 
+  # Returns true if the record is under the prefilter.
+  @spec under_prefilter?(Indexed.record(), Indexed.prefilter()) :: boolean
+  defp under_prefilter?(_record, nil), do: true
+  defp under_prefilter?(record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
+
+  # Expands parameters from `put` on the way to `UniquesBundle.put/5`.
+  @spec put_uniques_bundle(t, Indexed.prefilter(), atom) :: true
   defp put_uniques_bundle(put, prefilter, field_name) do
     UniquesBundle.put(put.bundle, put.index.index_ref, put.entity_name, prefilter, field_name)
   end
 
-  # Get counts_map and list versions of a unique values list at the same time.
-  @spec get_uniques_bundle(t, atom, Indexed.prefilter()) :: UniquesBundle.t()
+  # Get uniques_bundle - map and list versions of a unique values list
+  @spec get_uniques_bundle(t, atom, Indexed.prefilter()) :: t
   def get_uniques_bundle(put, field_name, prefilter) do
     map = Indexed.get_uniques_map(put.index, put.entity_name, field_name, prefilter)
     list = Indexed.get_uniques_list(put.index, put.entity_name, field_name, prefilter)
-    {map, list, false}
+    %{put | bundle: {map, list, false}}
   end
 
-  @doc """
-  Remove `value` from the `field_name` unique values tally for the given
-  entity/prefilter.
-  """
+  @doc "Remove value from the uniques bundle."
   @spec remove_unique(t, any) :: t
   def remove_unique(%{bundle: {counts_map, list, list_updated?}} = put, value) do
     new_bundle =
@@ -144,14 +194,14 @@ defmodule Indexed.Actions.Put do
     %{put | bundle: new_bundle}
   end
 
-  # Add a value to the uniques: in ETS and in the returned bundle.
+  @doc "Add a value to the uniques bundle."
   @spec add_unique(t, any) :: t
   def add_unique(%{bundle: {counts_map, list, list_updated?}} = put, value) do
     new_bundle =
       case counts_map[value] do
         nil ->
           first_bigger_idx = Enum.find_index(list, &(&1 > value))
-          new_list = List.insert_at(list, first_bigger_idx || 0, value)
+          new_list = List.insert_at(list, first_bigger_idx || -1, value)
           new_counts_map = Map.put(counts_map, value, 1)
           {new_counts_map, new_list, true}
 
@@ -162,7 +212,7 @@ defmodule Indexed.Actions.Put do
     %{put | bundle: new_bundle}
   end
 
-  # Add the id of `record` to the list of descending ids, sorting by `field`.
+  @doc "Add the id of `record` to the list of descending ids, sorting by `field`."
   @spec insert_by(t, [Indexed.id()], Entity.field()) :: [Indexed.id()]
   def insert_by(put, old_desc_ids, {name, opts}) do
     find_fun =

@@ -2,7 +2,7 @@ defmodule Indexed.UniquesBundle do
   @moduledoc """
   The uniques bundle is a 3-element tuple:
 
-  1. Map of discrete values to their occurrence counts
+  1. Map of discrete values to their occurrence counts.
   2. List of discrete values. (Keys of #1's map.)
   3. A boolean which is true when the list of keys has been updated and
      should be saved.
@@ -29,12 +29,16 @@ defmodule Indexed.UniquesBundle do
         prefilter,
         field_name
       ) do
-    if list_updated? do
-      list_key = Indexed.unique_values_key(entity_name, prefilter, field_name, :list)
-      :ets.insert(index_ref, {list_key, list})
-    end
+    list_key = fn -> Indexed.unique_values_key(entity_name, prefilter, field_name, :list) end
+    counts_key = fn -> Indexed.unique_values_key(entity_name, prefilter, field_name, :counts) end
 
-    counts_key = Indexed.unique_values_key(entity_name, prefilter, field_name, :counts)
-    :ets.insert(index_ref, {counts_key, counts_map})
+    if list_updated? and Enum.empty?(list) do
+      # This prefilter has ran out of records -- delete the ETS table.
+      :ets.delete(index_ref, list_key.())
+      :ets.delete(index_ref, counts_key.())
+    else
+      if list_updated?, do: :ets.insert(index_ref, {list_key.(), list})
+      :ets.insert(index_ref, {counts_key.(), counts_map})
+    end
   end
 end

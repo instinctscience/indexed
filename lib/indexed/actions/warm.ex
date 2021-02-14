@@ -49,10 +49,10 @@ defmodule Indexed.Actions.Warm do
       values under the prefilter will be managed. If the `nil` prefilter is
       defined, leave the other prefilter fields off the `:maintain_unique`
       option as these are automatically included. These lists can be fetched
-      via `get_unique_values/4`.
+      via `get_uniques_list/4`.
   """
-  @spec warm(keyword) :: Indexed.t()
-  def warm(args) do
+  @spec run(keyword) :: Indexed.t()
+  def run(args) do
     index_ref = :ets.new(:indexes, @ets_opts)
 
     entities =
@@ -111,7 +111,7 @@ defmodule Indexed.Actions.Warm do
       # Prepare & store list of no-prefilter uniques for this field.
       # (Remember that prefilter fields imply :maintain_unique on the nil
       # prefilter since these are needed in order to know what is useful to
-      # pass into `get_unique_values/4`.)
+      # pass into `get_uniques_list/4`.)
       {counts_map, list} =
         Enum.reduce(grouped, {%{}, []}, fn {pf_val, records}, {counts_map, list} ->
           {Map.put(counts_map, pf_val, length(records)), [pf_val | list]}

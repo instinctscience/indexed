@@ -11,7 +11,7 @@ defmodule Indexed.Entity do
     of options. Allowed options:
     * `:maintain_unique` - List of field name atoms for which a list of
       unique values under the prefilter will be managed. These lists can be
-      fetched via `get_unique_values/4`.
+      fetched via `get_uniques_list/4`.
   * `:ref` - ETS table reference where records of this entity type are
     stored, keyed by id.
   """

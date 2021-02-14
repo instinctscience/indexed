@@ -13,7 +13,7 @@ defmodule Indexed do
 
   @typedoc """
   Field name and value for which separate indexes for each field should be
-  kept. Note that these are made in conjunction with `get_unique_values/4`
+  kept. Note that these are made in conjunction with `get_uniques_list/4`
   and are not kept in state.
   """
   @type prefilter :: {atom, any} | nil
@@ -29,8 +29,8 @@ defmodule Indexed do
           index_ref: :ets.tid()
         }
 
-  defdelegate put(index, entity_name, record, opts \\ []), to: Indexed.Actions.Put
-  defdelegate warm(args), to: Indexed.Actions.Warm
+  defdelegate put(index, entity_name, record, opts \\ []), to: Indexed.Actions.Put, as: :run
+  defdelegate warm(args), to: Indexed.Actions.Warm, as: :run
   defdelegate paginate(index, entity_name, params), to: Indexed.Paginator
 
   @doc "Get an entity by id from the index."
@@ -69,16 +69,13 @@ defmodule Indexed do
   @doc """
   Get a list of all cached entities of a certain type.
 
-  ## Options
-
-  * `:prefilter` - Field atom given to `warm/1`'s `:prefilter` option,
-    indicating which of the entity's prepared, prefiltered list should be
-    used. Default is nil - no prefilter.
+  `prefilter` - 2-element tuple (`t:prefilter/0`) indicating which
+  sub-section of the data should be queried. Default is nil - no prefilter.
   """
-  @spec get_values(t, atom, atom, :asc | :desc, keyword) :: [record]
-  def get_values(index, entity_name, order_field, order_direction, opts \\ []) do
+  @spec get_values(t, atom, atom, :asc | :desc, prefilter) :: [record]
+  def get_values(index, entity_name, order_field, order_direction, prefilter \\ nil) do
     index
-    |> get_index(entity_name, order_field, order_direction, opts[:prefilter])
+    |> get_index(entity_name, order_field, order_direction, prefilter)
     |> Enum.map(&get(index, entity_name, &1))
   end
 
@@ -107,11 +104,11 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure by key (see `index_key/4`)."
-  @spec get_index(Indexed.t(), String.t()) :: list | map
-  def get_index(index, index_name) do
+  @spec get_index(Indexed.t(), String.t(), any) :: list | map
+  def get_index(index, index_name, default \\ :raise) do
     case :ets.lookup(index.index_ref, index_name) do
       [{^index_name, val}] -> val
-      [] -> raise "No such index: #{index_name}"
+      [] -> if default == :raise, do: raise("No such index: #{index_name}"), else: default
     end
   end
 end
