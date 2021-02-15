@@ -52,9 +52,7 @@ defmodule IndexedTest do
     end
 
     test "raise on no such index", %{index: index} do
-      assert_raise RuntimeError, fn ->
-        Indexed.get_index(index, :cars, :whoops, :desc)
-      end
+      assert is_nil(Indexed.get_index(index, :cars, :whoops, :desc))
     end
   end
 

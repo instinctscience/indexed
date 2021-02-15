@@ -43,25 +43,27 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure."
-  @spec get_index(t, atom, atom, :asc | :desc, prefilter) :: list | map
+  @spec get_index(t, atom, atom, :asc | :desc, prefilter) :: list | map | nil
   def get_index(index, entity_name, field_name, direction, prefilter \\ nil) do
     get_index(index, index_key(entity_name, field_name, direction, prefilter))
   end
 
   @doc """
   For the given `prefilter`, get a list (sorted ascending) of unique values
-  for `field_name` under `entity_name`.
+  for `field_name` under `entity_name`. Returns `nil` if prefilter is
+  non-existent.
   """
-  @spec get_uniques_list(t, atom, atom, prefilter) :: [any]
+  @spec get_uniques_list(t, atom, atom, prefilter) :: [any] | nil
   def get_uniques_list(index, entity_name, field_name, prefilter \\ nil) do
     get_index(index, unique_values_key(entity_name, prefilter, field_name, :list))
   end
 
   @doc """
   For the given `prefilter`, get a map where keys are unique values for
-  `field_name` under `entity_name` and vals are occurrence counts.
+  `field_name` under `entity_name` and vals are occurrence counts. Returns
+  `nil` if prefilter is non-existent.
   """
-  @spec get_uniques_map(t, atom, atom, prefilter) :: UniquesBundle.counts_map()
+  @spec get_uniques_map(t, atom, atom, prefilter) :: UniquesBundle.counts_map() | nil
   def get_uniques_map(index, entity_name, field_name, prefilter \\ nil) do
     get_index(index, unique_values_key(entity_name, prefilter, field_name, :counts))
   end
@@ -70,9 +72,10 @@ defmodule Indexed do
   Get a list of all cached entities of a certain type.
 
   `prefilter` - 2-element tuple (`t:prefilter/0`) indicating which
-  sub-section of the data should be queried. Default is nil - no prefilter.
+  sub-section of the data should be queried. Default is `nil` - no prefilter.
+  Returns `nil` if prefilter is non-existent.
   """
-  @spec get_values(t, atom, atom, :asc | :desc, prefilter) :: [record]
+  @spec get_values(t, atom, atom, :asc | :desc, prefilter) :: [record] | nil
   def get_values(index, entity_name, order_field, order_direction, prefilter \\ nil) do
     index
     |> get_index(entity_name, order_field, order_direction, prefilter)
@@ -105,10 +108,10 @@ defmodule Indexed do
 
   @doc "Get an index data structure by key (see `index_key/4`)."
   @spec get_index(Indexed.t(), String.t(), any) :: list | map
-  def get_index(index, index_name, default \\ :raise) do
+  def get_index(index, index_name, default \\ nil) do
     case :ets.lookup(index.index_ref, index_name) do
       [{^index_name, val}] -> val
-      [] -> if default == :raise, do: raise("No such index: #{index_name}"), else: default
+      [] -> default
     end
   end
 end

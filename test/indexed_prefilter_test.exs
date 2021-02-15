@@ -157,9 +157,7 @@ defmodule IndexedPrefilterTest do
       assert "Phonograph" in list.({:label, "A New Label"})
 
       # Make sure the uniques table for RAM Records is deleted.
-      assert_raise RuntimeError, fn ->
-        list.({:label, "RAM Records"})
-      end
+      assert is_nil(list.({:label, "RAM Records"}))
     end
 
     test "moving a couple ways at once is cool", %{index: index} do
@@ -174,9 +172,7 @@ defmodule IndexedPrefilterTest do
       assert ["CD", "FLAC", "Vinyl", "Yak Bak"] == list.(nil)
 
       # Make sure the uniques table for RAM Records is deleted.
-      assert_raise RuntimeError, fn ->
-        list.({:label, "RAM Records"})
-      end
+      assert is_nil(list.({:label, "RAM Records"}))
     end
   end
 
@@ -252,8 +248,6 @@ defmodule IndexedPrefilterTest do
     assert ["CD", "FLAC", "Phonograph", "Vinyl"] == list.(nil)
 
     # Make sure the uniques table for RAM Records is deleted.
-    assert_raise RuntimeError, fn ->
-      Indexed.get_uniques_list(index, :albums, :media, {:label, "RAM Records"})
-    end
+    assert is_nil(Indexed.get_uniques_list(index, :albums, :media, {:label, "RAM Records"}))
   end
 end
