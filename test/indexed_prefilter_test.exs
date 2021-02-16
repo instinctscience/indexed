@@ -33,18 +33,18 @@ defmodule IndexedPrefilterTest do
 
   test "counts_map", %{index: index} do
     assert %{"CD" => 2, "FLAC" => 2, "Vinyl" => 1} ==
-             Indexed.get_uniques_map(index, :albums, :media, nil)
+             Indexed.get_uniques_map(index, :albums, nil, :media)
 
     assert ["CD", "FLAC", "Vinyl"] ==
-             Indexed.get_uniques_list(index, :albums, :media, nil)
+             Indexed.get_uniques_list(index, :albums, nil, :media)
 
     prefilter = {:label, "Hospital Records"}
 
     assert %{"CD" => 1, "FLAC" => 2} ==
-             Indexed.get_uniques_map(index, :albums, :media, prefilter)
+             Indexed.get_uniques_map(index, :albums, prefilter, :media)
 
     assert ["CD", "FLAC"] ==
-             Indexed.get_uniques_list(index, :albums, :media, prefilter)
+             Indexed.get_uniques_list(index, :albums, prefilter, :media)
   end
 
   test "basic prefilter", %{index: index} do
@@ -130,12 +130,12 @@ defmodule IndexedPrefilterTest do
 
       # Get unique media values behind the "label=Hospital Records" prefilter.
       assert ~w(CD FLAC) ==
-               Indexed.get_uniques_list(index, :albums, :media, {:label, "Hospital Records"})
+               Indexed.get_uniques_list(index, :albums, {:label, "Hospital Records"}, :media)
     end
 
     test "adding a record updates uniques", %{index: index} do
-      list = &Indexed.get_uniques_list(index, :albums, :media, &1)
-      map = &Indexed.get_uniques_map(index, :albums, :media, &1)
+      list = &Indexed.get_uniques_list(index, :albums, &1, :media)
+      map = &Indexed.get_uniques_map(index, :albums, &1, :media)
 
       album = %Album{id: 7, label: "RAM Records", media: "Phonograph", artist: "Andy C"}
       Indexed.put(index, :albums, album)
@@ -145,7 +145,7 @@ defmodule IndexedPrefilterTest do
     end
 
     test "moving a record between prefilters updates uniques", %{index: index} do
-      list = &Indexed.get_uniques_list(index, :albums, :media, &1)
+      list = &Indexed.get_uniques_list(index, :albums, &1, :media)
 
       album = %Album{id: 7, label: "RAM Records", media: "Phonograph", artist: "Andy C"}
       Indexed.put(index, :albums, album)
@@ -161,7 +161,7 @@ defmodule IndexedPrefilterTest do
     end
 
     test "moving a couple ways at once is cool", %{index: index} do
-      list = &Indexed.get_uniques_list(index, :albums, :media, &1)
+      list = &Indexed.get_uniques_list(index, :albums, &1, :media)
       album = %Album{id: 7, label: "RAM Records", media: "Phonograph", artist: "Andy C"}
       Indexed.put(index, :albums, album)
 
@@ -225,16 +225,16 @@ defmodule IndexedPrefilterTest do
                Indexed.get_uniques_list(index, :albums, :media)
 
       assert ["FLAC"] ==
-               Indexed.get_uniques_list(index, :albums, :media, {:label, "Hospital Records"})
+               Indexed.get_uniques_list(index, :albums, {:label, "Hospital Records"}, :media)
 
       assert ["8-track"] ==
-               Indexed.get_uniques_list(index, :albums, :media, {:label, "Shogun Audio"})
+               Indexed.get_uniques_list(index, :albums, {:label, "Shogun Audio"}, :media)
     end
   end
 
   test "moving a record between prefilters creates and drops prefilter", %{index: index} do
-    list = &Indexed.get_uniques_list(index, :albums, :media, &1)
-    map = &Indexed.get_uniques_map(index, :albums, :media, &1)
+    list = &Indexed.get_uniques_list(index, :albums, &1, :media)
+    map = &Indexed.get_uniques_map(index, :albums, &1, :media)
 
     album = %Album{id: 7, label: "RAM Records", media: "Phonograph", artist: "Andy C"}
     Indexed.put(index, :albums, album)
@@ -248,6 +248,6 @@ defmodule IndexedPrefilterTest do
     assert ["CD", "FLAC", "Phonograph", "Vinyl"] == list.(nil)
 
     # Make sure the uniques table for RAM Records is deleted.
-    assert is_nil(Indexed.get_uniques_list(index, :albums, :media, {:label, "RAM Records"}))
+    assert is_nil(list.({:label, "RAM Records"}))
   end
 end

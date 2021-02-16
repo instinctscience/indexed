@@ -33,6 +33,7 @@ defmodule Indexed.Actions.Put do
     # Update the record itself (by id).
     :ets.insert(Map.fetch!(index.entities, entity_name).ref, {record.id, record})
 
+    # Update indexes for each prefilter.
     Enum.each(entity.prefilters, fn
       {nil, pf_opts} ->
         update_index_for_fields(put, nil, fields, false)
@@ -94,8 +95,8 @@ defmodule Indexed.Actions.Put do
     %{previous: previous, record: record} = put
 
     Enum.each(fields, fn {field_name, _} = field ->
-      record_under_prefilter = under_prefilter?(record, prefilter)
-      prev_under_prefilter = previous && under_prefilter?(previous, prefilter)
+      record_under_prefilter = under_prefilter?(put, record, prefilter)
+      prev_under_prefilter = previous && under_prefilter?(put, previous, prefilter)
       record_value = Map.get(record, field_name)
       prev_value = previous && Map.get(previous, field_name)
 
@@ -122,8 +123,8 @@ defmodule Indexed.Actions.Put do
 
   @spec put_index(t, Entity.field(), Indexed.prefilter(), [atom], boolean) :: :ok
   defp put_index(put, {field_name, _} = field, prefilter, actions, newly_seen_value?) do
-    asc_key = Indexed.index_key(put.entity_name, field_name, :asc, prefilter)
-    desc_key = Indexed.index_key(put.entity_name, field_name, :desc, prefilter)
+    asc_key = Indexed.index_key(put.entity_name, prefilter, field_name, :asc)
+    desc_key = Indexed.index_key(put.entity_name, prefilter, field_name, :desc)
 
     desc_ids = fn desc_key ->
       if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
@@ -160,11 +161,11 @@ defmodule Indexed.Actions.Put do
       put =
         if put.previous do
           put =
-            if under_prefilter?(put.previous, prefilter),
+            if under_prefilter?(put, put.previous, prefilter),
               do: remove_unique(put, previous_value),
               else: put
 
-          if under_prefilter?(put.record, prefilter),
+          if under_prefilter?(put, put.record, prefilter),
             do: add_unique(put, new_value),
             else: put
         else
@@ -176,9 +177,14 @@ defmodule Indexed.Actions.Put do
   end
 
   # Returns true if the record is under the prefilter.
-  @spec under_prefilter?(Indexed.record(), Indexed.prefilter()) :: boolean
-  defp under_prefilter?(_record, nil), do: true
-  defp under_prefilter?(record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
+  @spec under_prefilter?(t, Indexed.record(), Indexed.prefilter()) :: boolean
+  defp under_prefilter?(_put, _record, nil), do: true
+  defp under_prefilter?(_put, record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
+
+  defp under_prefilter?(put, %{id: id}, fingerprint) do
+    some_field = hd(Map.fetch!(put.index.entities, put.entity_name).fields)
+    id in Indexed.index_key(put.index.entity_name, fingerprint, some_field)
+  end
 
   # Expands parameters from `put` on the way to `UniquesBundle.put/5`.
   @spec put_uniques_bundle(t, Indexed.prefilter(), atom) :: true
@@ -187,10 +193,10 @@ defmodule Indexed.Actions.Put do
   end
 
   # Get uniques_bundle - map and list versions of a unique values list
-  @spec get_uniques_bundle(t, atom, Indexed.prefilter()) :: t
-  def get_uniques_bundle(put, field_name, prefilter) do
-    map = Indexed.get_uniques_map(put.index, put.entity_name, field_name, prefilter)
-    list = Indexed.get_uniques_list(put.index, put.entity_name, field_name, prefilter)
+  @spec get_uniques_bundle(t, Indexed.prefilter(), atom) :: t
+  def get_uniques_bundle(put, prefilter, field_name) do
+    map = Indexed.get_uniques_map(put.index, put.entity_name, prefilter, field_name)
+    list = Indexed.get_uniques_list(put.index, put.entity_name, prefilter, field_name)
     %{put | bundle: {map, list, false}}
   end
 

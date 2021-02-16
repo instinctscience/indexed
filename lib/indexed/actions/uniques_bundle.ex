@@ -25,8 +25,8 @@ defmodule Indexed.UniquesBundle do
         prefilter,
         field_name
       ) do
-    list_key = fn -> Indexed.unique_values_key(entity_name, prefilter, field_name, :list) end
-    counts_key = fn -> Indexed.unique_values_key(entity_name, prefilter, field_name, :counts) end
+    list_key = fn -> Indexed.uniques_list_key(entity_name, prefilter, field_name) end
+    counts_key = fn -> Indexed.uniques_map_key(entity_name, prefilter, field_name) end
 
     if list_updated? and Enum.empty?(list) do
       # This prefilter has ran out of records -- delete the ETS table.

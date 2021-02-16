@@ -61,7 +61,7 @@ defmodule Indexed.Paginator do
     order_direction = params[:order_direction]
     order_field = params[:order_field]
     cursor_fields = [{order_field, order_direction}, {:id, :asc}]
-    ordered_ids = get_index(index, entity_name, order_field, order_direction, params[:prefilter])
+    ordered_ids = get_index(index, entity_name, params[:prefilter], order_field, order_direction)
 
     filter = params[:filter] || fn _record -> true end
     getter = fn id -> get(index, entity_name, id) end
