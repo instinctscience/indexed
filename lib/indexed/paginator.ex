@@ -54,26 +54,26 @@ defmodule Indexed.Paginator do
     # of records is expensive so it is capped by default. Can be set to `:infinity`
     # in order to count all the records. Defaults to `10,000`.
   """
-  @spec paginate(Indexed.t(), atom, keyword) :: Paginator.Page.t()
-  def paginate(index, entity_name, params) do
-    import Indexed
-
+  @spec run(Indexed.t(), atom, keyword) :: Paginator.Page.t()
+  def run(index, entity_name, params) do
     order_direction = params[:order_direction]
     order_field = params[:order_field]
     cursor_fields = [{order_field, order_direction}, {:id, :asc}]
-    ordered_ids = get_index(index, entity_name, params[:prefilter], order_field, order_direction)
+
+    ordered_ids =
+      Indexed.get_index(index, entity_name, params[:prefilter], order_field, order_direction)
 
     filter = params[:filter] || fn _record -> true end
-    getter = fn id -> get(index, entity_name, id) end
+    getter = fn id -> Indexed.get(index, entity_name, id) end
 
     paginator_opts = Keyword.merge(params, cursor_fields: cursor_fields, filter: filter)
 
-    do_paginate(ordered_ids, getter, paginator_opts)
+    paginate(ordered_ids, getter, paginator_opts)
   end
 
   @doc ""
-  @spec do_paginate([id], fun, keyword) :: Page.t()
-  def do_paginate(ordered_ids, record_getter, opts \\ []) do
+  @spec paginate([id], fun, keyword) :: Page.t()
+  def paginate(ordered_ids, record_getter, opts \\ []) do
     filter = opts[:filter]
     config = Config.new(Keyword.merge(@config, opts))
 

@@ -2,8 +2,10 @@ defmodule Indexed do
   @moduledoc """
   Tools for creating an index module.
   """
-  alias Indexed.{Entity, UniquesBundle}
+  alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
+
+  @ets_opts [read_concurrency: true]
 
   @typedoc "A record map being cached & indexed. `:id` key is required."
   @type record :: map
@@ -17,6 +19,12 @@ defmodule Indexed do
   indicates a view fingerprint, and `nil` means the full data set.
   """
   @type prefilter :: {atom, any} | String.t() | nil
+
+  @typedoc """
+  A function which takes a record and returns a value which will be evaluated
+  for truthiness. If true, the value will be included in the result set.
+  """
+  @type filter :: (record -> any)
 
   @typedoc "Map held in ETS - tracks all views and their created timestamps."
   @type views :: %{String.t() => DateTime.t()}
@@ -32,9 +40,15 @@ defmodule Indexed do
           index_ref: :ets.tid()
         }
 
-  defdelegate put(index, entity_name, record), to: Indexed.Actions.Put, as: :run
   defdelegate warm(args), to: Indexed.Actions.Warm, as: :run
-  defdelegate paginate(index, entity_name, params), to: Indexed.Paginator
+  defdelegate put(index, entity_name, record), to: Indexed.Actions.Put, as: :run
+  defdelegate create_view(index, entity_name, fp, opts), to: Indexed.Actions.CreateView, as: :run
+  defdelegate paginate(index, entity_name, params), to: Indexed.Paginator, as: :run
+  defdelegate fingerprint(params), to: Indexed.View
+
+  @doc "Get the ETS options to be used for any and all tables."
+  @spec ets_opts :: keyword
+  def ets_opts, do: @ets_opts
 
   @doc "Get an entity by id from the index."
   @spec get(t, atom, id, any) :: any
@@ -53,9 +67,9 @@ defmodule Indexed do
 
   @doc "Get an index data structure by key."
   @spec get_index(Indexed.t(), String.t(), any) :: any
-  def get_index(index, index_name, default \\ nil) do
-    case :ets.lookup(index.index_ref, index_name) do
-      [{^index_name, val}] -> val
+  def get_index(index, index_key, default \\ nil) do
+    case :ets.lookup(index.index_ref, index_key) do
+      [{^index_key, val}] -> val
       [] -> default
     end
   end
@@ -112,9 +126,16 @@ defmodule Indexed do
     "uniques_list_#{entity_name}#{prefilter_id(prefilter)}#{field_name}"
   end
 
-  @doc "Cache key holding `t:views/0`."
+  @doc "Cache key holding `t:views/0` for a certain entity."
   @spec views_key(atom) :: String.t()
   def views_key(entity_name), do: "views_#{entity_name}"
+
+  @spec get_view(t, atom, View.fingerprint()) :: View.t() | nil
+  def get_view(index, entity_name, fingerprint) do
+    with %{} = views <- get_index(index, views_key(entity_name)) do
+      Map.get(views, fingerprint)
+    end
+  end
 
   # Create a piece of an ETS table key to identify the set being stored.
   @spec prefilter_id(prefilter) :: String.t()

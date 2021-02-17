@@ -1,7 +1,3 @@
-defmodule Album do
-  defstruct [:id, :label, :media, :artist]
-end
-
 defmodule IndexedPrefilterTest do
   @moduledoc "Test `:prefilter` and its `:maintain_unique` option."
   use ExUnit.Case

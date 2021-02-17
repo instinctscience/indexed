@@ -3,8 +3,6 @@ defmodule Indexed.Actions.Warm do
   alias Indexed.{Entity, UniquesBundle}
   alias __MODULE__
 
-  @ets_opts [read_concurrency: true]
-
   defstruct [:data_tuple, :entity_name, :index_ref]
 
   @typedoc """
@@ -55,11 +53,11 @@ defmodule Indexed.Actions.Warm do
   """
   @spec run(keyword) :: Indexed.t()
   def run(args) do
-    index_ref = :ets.new(:indexes, @ets_opts)
+    index_ref = :ets.new(:indexes, Indexed.ets_opts())
 
     entities =
       Map.new(args, fn {entity_name, opts} ->
-        ref = :ets.new(entity_name, @ets_opts)
+        ref = :ets.new(entity_name, Indexed.ets_opts())
         fields = resolve_fields_opt(opts[:fields], entity_name)
         prefilter_configs = resolve_prefilters_opt(opts[:prefilters])
 
