@@ -35,28 +35,74 @@ defmodule Indexed.Actions.Put do
     Enum.each(entity.prefilters, fn
       {nil, pf_opts} ->
         update_index_for_fields(put, nil, fields, false)
-        update_for_maintain_unique(put, pf_opts, nil, false)
+        update_all_uniques(put, pf_opts[:maintain_unique] || [], nil, false)
 
       {pf_key, pf_opts} ->
         # Get global (prefilter nil) uniques bundle.
         {map, list, _} = bundle = UniquesBundle.get(index, entity_name, nil, pf_key)
         record_value = Map.get(record, pf_key)
 
-        fun = fn value, newly_seen_value? ->
+        handle_prefilter_value = fn value, new_value? ->
+          # This will be how it is known which instances for this pf key
+          # actually exist so users and machines alike can know which
+          # prefilters (key and val) actually exist!
           update_uniques_for_global_prefilter(put, bundle, pf_key, value)
 
           prefilter = {pf_key, value}
-
-          update_index_for_fields(put, prefilter, fields, newly_seen_value?)
-          update_for_maintain_unique(put, pf_opts, prefilter, newly_seen_value?)
+          update_index_for_fields(put, prefilter, fields, new_value?)
+          update_all_uniques(put, pf_opts[:maintain_unique] || [], prefilter, new_value?)
         end
 
         # If record has a newly-seen prefilter value, add fresh indexes.
-        unless Map.has_key?(map, record_value), do: fun.(record_value, true)
+        unless Map.has_key?(map, record_value) do
+          handle_prefilter_value.(record_value, true)
+        end
 
         # For each existing unique value for the prefilter field, update indexes.
-        Enum.each(list, &fun.(&1, false))
+        Enum.each(list, fn value ->
+          handle_prefilter_value.(value, false)
+        end)
     end)
+
+    # # Update the views
+    # Enum.each(Indexed.get_views(index, entity_name), fn {fp, %{maintain_unique: mu_fields}} ->
+
+    # end)
+  end
+
+  # Loop the fields of a a `maintain_unique` option, updating uniques indexes.
+  # `new_value?` of true indicates the prefilter value is new and not indexed.
+  defp update_all_uniques(put, maintain_unique, prefilter, new_value?) do
+    for field_name <- maintain_unique do
+      prev_in_pf? = put.previous && under_prefilter?(put, put.previous, prefilter)
+      this_in_pf? = under_prefilter?(put, put.record, prefilter)
+
+      bundle =
+        if new_value?,
+          do: {%{}, [], false},
+          else: UniquesBundle.get(put.index, put.entity_name, prefilter, field_name)
+
+      update_uniques(put, prefilter, field_name, bundle, prev_in_pf?, this_in_pf?)
+    end
+  end
+
+  # Update any configured :maintain_unique fields for this prefilter.
+  # `prev_in_pf?` and `this_in_pf?` tell the logic whether the previous and new
+  # records are in the prefilter.
+  @spec update_uniques(t, Indexed.prefilter(), atom, UniquesBundle.t(), boolean, boolean) :: :ok
+  defp update_uniques(put, prefilter, field_name, bundle, prev_in_pf?, this_in_pf?) do
+    new_value = Map.get(put.record, field_name)
+    previous_value = put.previous && Map.get(put.previous, field_name)
+
+    bundle =
+      if put.previous do
+        bundle = if prev_in_pf?, do: UniquesBundle.remove(bundle, previous_value), else: bundle
+        if this_in_pf?, do: UniquesBundle.add(bundle, new_value), else: bundle
+      else
+        UniquesBundle.add(bundle, new_value)
+      end
+
+    UniquesBundle.put(bundle, put.index.index_ref, put.entity_name, prefilter, field_name)
   end
 
   # Get and update global (prefilter nil) uniques for the field_name.
@@ -143,39 +189,6 @@ defmodule Indexed.Actions.Put do
     save.(new_desc_ids)
 
     :ok
-  end
-
-  # Update any configured :maintain_unique fields for this prefilter.
-  @spec update_for_maintain_unique(t, keyword, Indexed.prefilter(), boolean) :: :ok
-  defp update_for_maintain_unique(put, pf_opts, prefilter, newly_seen_value?) do
-    prev_under_prefilter? = put.previous && under_prefilter?(put, put.previous, prefilter)
-    this_under_prefilter? = under_prefilter?(put, put.record, prefilter)
-
-    Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
-      bundle =
-        if newly_seen_value?,
-          do: {%{}, [], false},
-          else: UniquesBundle.get(put.index, put.entity_name, prefilter, field_name)
-
-      new_value = Map.get(put.record, field_name)
-      previous_value = put.previous && Map.get(put.previous, field_name)
-
-      bundle =
-        if put.previous do
-          bundle =
-            if prev_under_prefilter?,
-              do: UniquesBundle.remove(bundle, previous_value),
-              else: bundle
-
-          if this_under_prefilter?,
-            do: UniquesBundle.add(bundle, new_value),
-            else: bundle
-        else
-          UniquesBundle.add(bundle, new_value)
-        end
-
-      UniquesBundle.put(bundle, put.index.index_ref, put.entity_name, prefilter, field_name)
-    end)
   end
 
   # Returns true if the record is under the prefilter.

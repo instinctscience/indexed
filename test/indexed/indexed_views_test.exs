@@ -48,12 +48,24 @@ defmodule IndexedViewsTest do
     assert expected_view == Indexed.get_view(index, :albums, fingerprint)
   end
 
-  test "get view records", %{fingerprint: fingerprint, index: index} do
-    a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
-    a2 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
+  describe "just warmed up" do
+    test "get view records", %{fingerprint: fingerprint, index: index} do
+      a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      a2 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
 
-    assert [a1, a2] == Indexed.get_records(index, :albums, fingerprint, :artist, :asc)
-    assert %{2 => 1, 3 => 1} == Indexed.get_uniques_map(index, :albums, fingerprint, :id)
-    assert [2, 3] == Indexed.get_uniques_list(index, :albums, fingerprint, :id)
+      assert [a1, a2] == Indexed.get_records(index, :albums, fingerprint, :artist, :asc)
+      assert %{2 => 1, 3 => 1} == Indexed.get_uniques_map(index, :albums, fingerprint, :id)
+      assert [2, 3] == Indexed.get_uniques_list(index, :albums, fingerprint, :id)
+    end
+  end
+
+  describe "with a record updated" do
+    test "record is removed from the view", %{fingerprint: fingerprint, index: index} do
+      album = %Album{id: 3, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
+      Indexed.put(index, :albums, album)
+
+      assert [%Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}] ==
+               Indexed.get_records(index, :albums, fingerprint, :artist, :asc)
+    end
   end
 end

@@ -55,7 +55,7 @@ defmodule Indexed.UniquesBundle do
   end
 
   @doc "Store two indexes for unique value tracking."
-  @spec put(t, :ets.tid(), atom, Indexed.prefilter(), atom) :: true
+  @spec put(t, :ets.tid(), atom, Indexed.prefilter(), atom) :: :ok
   def put(
         {counts_map, list, list_updated?},
         index_ref,
@@ -74,5 +74,7 @@ defmodule Indexed.UniquesBundle do
       if list_updated?, do: :ets.insert(index_ref, {list_key.(), list})
       :ets.insert(index_ref, {counts_key.(), counts_map})
     end
+
+    :ok
   end
 end
