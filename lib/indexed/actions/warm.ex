@@ -148,8 +148,8 @@ defmodule Indexed.Actions.Warm do
 
   # Data direction hint does NOT match this field -- sorting needed.
   def warm_index(ref, entity_name, prefilter, {name, _} = field, {_, _, data}) do
-    asc_key = Indexed.index_key(entity_name, name, :asc, prefilter)
-    desc_key = Indexed.index_key(entity_name, name, :desc, prefilter)
+    asc_key = Indexed.index_key(entity_name, prefilter, name, :asc)
+    desc_key = Indexed.index_key(entity_name, prefilter, name, :desc)
     asc_ids = data |> Enum.sort(Warm.record_sort_fn(field)) |> id_list()
 
     :ets.insert(ref, {asc_key, asc_ids})

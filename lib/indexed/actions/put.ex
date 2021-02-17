@@ -41,7 +41,8 @@ defmodule Indexed.Actions.Put do
 
       {pf_key, pf_opts} ->
         # Get global (prefilter nil) uniques bundle.
-        %{bundle: {map, list, _}} = put = get_uniques_bundle(put, pf_key, nil)
+        %{bundle: {map, list, _}} = put = get_uniques_bundle(put, nil, pf_key)
+        # %{bundle: {map, list, _}}put = %{put | bundle: {%{}, [], false}}
         record_value = Map.get(record, pf_key)
 
         fun = fn value, newly_seen_value? ->
@@ -149,11 +150,14 @@ defmodule Indexed.Actions.Put do
   # Update any configured :maintain_unique fields for this prefilter.
   @spec update_for_maintain_unique(t, keyword, Indexed.prefilter(), boolean) :: :ok
   defp update_for_maintain_unique(put, pf_opts, prefilter, newly_seen_value?) do
+    prev_under_prefilter? = put.previous && under_prefilter?(put, put.previous, prefilter)
+    this_under_prefilter? = under_prefilter?(put, put.record, prefilter)
+
     Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
       put =
         if newly_seen_value?,
           do: %{put | bundle: {%{}, [], false}},
-          else: get_uniques_bundle(put, field_name, prefilter)
+          else: get_uniques_bundle(put, prefilter, field_name)
 
       new_value = Map.get(put.record, field_name)
       previous_value = put.previous && Map.get(put.previous, field_name)
@@ -161,11 +165,11 @@ defmodule Indexed.Actions.Put do
       put =
         if put.previous do
           put =
-            if under_prefilter?(put, put.previous, prefilter),
+            if prev_under_prefilter?,
               do: remove_unique(put, previous_value),
               else: put
 
-          if under_prefilter?(put, put.record, prefilter),
+          if this_under_prefilter?,
             do: add_unique(put, new_value),
             else: put
         else
@@ -181,10 +185,10 @@ defmodule Indexed.Actions.Put do
   defp under_prefilter?(_put, _record, nil), do: true
   defp under_prefilter?(_put, record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
 
-  defp under_prefilter?(put, %{id: id}, fingerprint) do
-    some_field = hd(Map.fetch!(put.index.entities, put.entity_name).fields)
-    id in Indexed.index_key(put.index.entity_name, fingerprint, some_field)
-  end
+  # defp under_prefilter?(put, %{id: id}, fingerprint) when is_binary(fingerprint) do
+  #   some_field = hd(Map.fetch!(put.index.entities, put.entity_name).fields)
+  #   id in Indexed.index_key(put.entity_name, fingerprint, some_field, :asc)
+  # end
 
   # Expands parameters from `put` on the way to `UniquesBundle.put/5`.
   @spec put_uniques_bundle(t, Indexed.prefilter(), atom) :: true

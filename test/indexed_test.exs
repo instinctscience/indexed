@@ -24,7 +24,7 @@ defmodule IndexedTest do
 
   test "get_records", %{index: index} do
     assert [%Car{id: 1, make: "Lamborghini"}, %Car{id: 2, make: "Mazda"}] ==
-             Indexed.get_records(index, :cars, :make, :asc)
+             Indexed.get_records(index, :cars, nil, :make, :asc)
   end
 
   describe "put" do
@@ -41,18 +41,16 @@ defmodule IndexedTest do
   end
 
   test "index_key" do
-    asc_key = "cars[]color_asc"
-    ^asc_key = Indexed.index_key("cars", "color", :asc, nil)
-    ^asc_key = Indexed.index_key("cars", "color", :asc)
+    assert "idx_cars[]color_asc" == Indexed.index_key("cars", nil, "color", :asc)
   end
 
   describe "get_index" do
     test "happy", %{index: index} do
-      assert [2, 1] == Indexed.get_index(index, :cars, :make, :desc)
+      assert [2, 1] == Indexed.get_index(index, :cars, nil, :make, :desc)
     end
 
     test "raise on no such index", %{index: index} do
-      assert is_nil(Indexed.get_index(index, :cars, :whoops, :desc))
+      assert is_nil(Indexed.get_index(index, :cars, nil, :whoops, :desc))
     end
   end
 
@@ -113,7 +111,7 @@ defmodule IndexedTest do
     assert %Car{id: 3, make: "Tesla"} = Indexed.get(index, :cars, 3)
 
     assert [%Car{make: "Lambo"}, %Car{make: "Mazda"}, %Car{make: "Tesla"}] =
-             Indexed.get_records(index, :cars, :make, :asc)
+             Indexed.get_records(index, :cars, nil, :make, :asc)
 
     after_cursor = "g3QAAAACZAACaWRhAmQABG1ha2VtAAAABU1hemRh"
 
@@ -185,6 +183,7 @@ defmodule IndexedTest do
       inserted_at: ~U[2021-02-14 08:14:12.004640Z]
     })
 
-    assert [%{id: 2}, %{id: 3}, %{id: 1}] = Indexed.get_records(index, :cars, :inserted_at, :desc)
+    assert [%{id: 2}, %{id: 3}, %{id: 1}] =
+             Indexed.get_records(index, :cars, nil, :inserted_at, :desc)
   end
 end

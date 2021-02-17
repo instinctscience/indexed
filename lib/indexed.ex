@@ -14,7 +14,7 @@ defmodule Indexed do
   @typedoc """
   Specifies a discrete data set of an entity, pre-partitioned into a group.
   A tuple indicates a field name and value which must match, a string
-  indicates a view fingerprint, and nil means the full data set.
+  indicates a view fingerprint, and `nil` means the full data set.
   """
   @type prefilter :: {atom, any} | String.t() | nil
 
@@ -47,12 +47,12 @@ defmodule Indexed do
 
   @doc "Get an index data structure."
   @spec get_index(t, atom, prefilter, atom, :asc | :desc) :: list | map | nil
-  def get_index(index, entity_name, prefilter \\ nil, order_field, order_dir) do
+  def get_index(index, entity_name, prefilter, order_field, order_dir) do
     get_index(index, index_key(entity_name, prefilter, order_field, order_dir))
   end
 
-  @doc "Get an index data structure by key (see `index_key/4`)."
-  @spec get_index(Indexed.t(), String.t(), any) :: list | map
+  @doc "Get an index data structure by key."
+  @spec get_index(Indexed.t(), String.t(), any) :: any
   def get_index(index, index_name, default \\ nil) do
     case :ets.lookup(index.index_ref, index_name) do
       [{^index_name, val}] -> val
@@ -64,8 +64,8 @@ defmodule Indexed do
   For the given data set, get a list (sorted ascending) of unique values for
   `field_name` under `entity_name`. Returns `nil` if no data is found.
   """
-  @spec get_uniques_list(t, atom, prefilter, atom) :: [any] | nil
-  def get_uniques_list(index, entity_name, prefilter \\ nil, field_name) do
+  @spec get_uniques_list(t, atom, prefilter, atom) :: any
+  def get_uniques_list(index, entity_name, prefilter, field_name) do
     get_index(index, uniques_list_key(entity_name, prefilter, field_name))
   end
 
@@ -75,7 +75,7 @@ defmodule Indexed do
   `nil` if no data is found.
   """
   @spec get_uniques_map(t, atom, prefilter, atom) :: UniquesBundle.counts_map() | nil
-  def get_uniques_map(index, entity_name, prefilter \\ nil, field_name) do
+  def get_uniques_map(index, entity_name, prefilter, field_name) do
     get_index(index, uniques_map_key(entity_name, prefilter, field_name))
   end
 
@@ -85,8 +85,8 @@ defmodule Indexed do
   `prefilter` - 2-element tuple (`t:prefilter/0`) indicating which
   sub-section of the data should be queried. Default is `nil` - no prefilter.
   """
-  @spec get_records(t, atom, prefilter , atom, :asc | :desc) :: [record]
-  def get_records(index, entity_name, prefilter \\ nil, order_field, order_direction) do
+  @spec get_records(t, atom, prefilter, atom, :asc | :desc) :: [record]
+  def get_records(index, entity_name, prefilter, order_field, order_direction) do
     index
     |> get_index(entity_name, prefilter, order_field, order_direction)
     |> Enum.map(&get(index, entity_name, &1))
@@ -94,7 +94,7 @@ defmodule Indexed do
 
   @doc "Cache key for a given entity, field and direction."
   @spec index_key(atom, prefilter, atom, :asc | :desc) :: String.t()
-  def index_key(entity_name, prefilter \\ nil, field_name, direction) do
+  def index_key(entity_name, prefilter, field_name, direction) do
     "idx_#{entity_name}#{prefilter_id(prefilter)}#{field_name}_#{direction}"
   end
 
@@ -102,13 +102,13 @@ defmodule Indexed do
   Cache key holding unique values & counts for a given entity and field.
   """
   @spec uniques_map_key(atom, prefilter, atom) :: String.t()
-  def uniques_map_key(entity_name, prefilter \\ nil, field_name) do
+  def uniques_map_key(entity_name, prefilter, field_name) do
     "uniques_map_#{entity_name}#{prefilter_id(prefilter)}#{field_name}"
   end
 
   @doc "Cache key holding unique values for a given entity and field."
   @spec uniques_list_key(atom, prefilter, atom) :: String.t()
-  def uniques_list_key(entity_name, prefilter \\ nil, field_name) do
+  def uniques_list_key(entity_name, prefilter, field_name) do
     "uniques_list_#{entity_name}#{prefilter_id(prefilter)}#{field_name}"
   end
 
@@ -117,7 +117,7 @@ defmodule Indexed do
   def views_key(entity_name), do: "views_#{entity_name}"
 
   # Create a piece of an ETS table key to identify the set being stored.
-  @spec prefilter_id(keyword) :: String.t()
+  @spec prefilter_id(prefilter) :: String.t()
   defp prefilter_id({k, v}), do: "[#{k}=#{v}]"
   defp prefilter_id(fp) when is_binary(fp), do: "<#{fp}>"
   defp prefilter_id(_), do: "[]"
