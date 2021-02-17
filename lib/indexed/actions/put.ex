@@ -3,17 +3,15 @@ defmodule Indexed.Actions.Put do
   alias Indexed.{Entity, UniquesBundle}
   alias __MODULE__
 
-  defstruct [:bundle, :entity_name, :index, :previous, :record]
+  defstruct [:entity_name, :index, :previous, :record]
 
   @typedoc """
-  * `:bundle` - See `t:Indexed.UniquesBundle/0`.
   * `:entity_name` - Entity name being operated on.
   * `:index` - See `t:Indexed.t/0`.
   * `:previous` - The previous version of the record. `nil` if none.
   * `:record` - The new record being added in the put operation.
   """
   @type t :: %__MODULE__{
-          bundle: UniquesBundle.t() | nil,
           entity_name: atom,
           index: Indexed.t(),
           previous: Indexed.record() | nil,
@@ -41,12 +39,11 @@ defmodule Indexed.Actions.Put do
 
       {pf_key, pf_opts} ->
         # Get global (prefilter nil) uniques bundle.
-        %{bundle: {map, list, _}} = put = get_uniques_bundle(put, nil, pf_key)
-        # %{bundle: {map, list, _}}put = %{put | bundle: {%{}, [], false}}
+        {map, list, _} = bundle = UniquesBundle.get(index, entity_name, nil, pf_key)
         record_value = Map.get(record, pf_key)
 
         fun = fn value, newly_seen_value? ->
-          update_uniques_for_global_prefilter(put, pf_key, value)
+          update_uniques_for_global_prefilter(put, bundle, pf_key, value)
 
           prefilter = {pf_key, value}
 
@@ -65,10 +62,11 @@ defmodule Indexed.Actions.Put do
   # Get and update global (prefilter nil) uniques for the field_name.
   # These field_names would be used as prefilter keys when querying prefilters.
   # `value` is the current global prefilter value being iterated over.
-  @spec update_uniques_for_global_prefilter(t, atom, any) :: :ok
-  defp update_uniques_for_global_prefilter(put, field_name, value) do
+  @spec update_uniques_for_global_prefilter(t, UniquesBundle.t(), atom, any) :: :ok
+  defp update_uniques_for_global_prefilter(put, bundle, field_name, value) do
     prev_value = put.previous && Map.get(put.previous, field_name)
     new_value = Map.get(put.record, field_name)
+    put_bundle = &UniquesBundle.put(&1, put.index.index_ref, put.entity_name, nil, field_name)
 
     cond do
       put.previous && prev_value == new_value ->
@@ -77,11 +75,11 @@ defmodule Indexed.Actions.Put do
 
       put.previous && prev_value == value ->
         # Record was moved to another prefilter. Remove it from this one.
-        put |> remove_unique(value) |> put_uniques_bundle(nil, field_name)
+        bundle |> UniquesBundle.remove(value) |> put_bundle.()
 
       new_value == value ->
         # Record was moved to this prefilter. Add it.
-        put |> add_unique(value) |> put_uniques_bundle(nil, field_name)
+        bundle |> UniquesBundle.add(value) |> put_bundle.()
 
       true ->
         nil
@@ -154,29 +152,29 @@ defmodule Indexed.Actions.Put do
     this_under_prefilter? = under_prefilter?(put, put.record, prefilter)
 
     Enum.each(pf_opts[:maintain_unique] || [], fn field_name ->
-      put =
+      bundle =
         if newly_seen_value?,
-          do: %{put | bundle: {%{}, [], false}},
-          else: get_uniques_bundle(put, prefilter, field_name)
+          do: {%{}, [], false},
+          else: UniquesBundle.get(put.index, put.entity_name, prefilter, field_name)
 
       new_value = Map.get(put.record, field_name)
       previous_value = put.previous && Map.get(put.previous, field_name)
 
-      put =
+      bundle =
         if put.previous do
-          put =
+          bundle =
             if prev_under_prefilter?,
-              do: remove_unique(put, previous_value),
-              else: put
+              do: UniquesBundle.remove(bundle, previous_value),
+              else: bundle
 
           if this_under_prefilter?,
-            do: add_unique(put, new_value),
-            else: put
+            do: UniquesBundle.add(bundle, new_value),
+            else: bundle
         else
-          add_unique(put, new_value)
+          UniquesBundle.add(bundle, new_value)
         end
 
-      put_uniques_bundle(put, prefilter, field_name)
+      UniquesBundle.put(bundle, put.index.index_ref, put.entity_name, prefilter, field_name)
     end)
   end
 
@@ -189,50 +187,6 @@ defmodule Indexed.Actions.Put do
   #   some_field = hd(Map.fetch!(put.index.entities, put.entity_name).fields)
   #   id in Indexed.index_key(put.entity_name, fingerprint, some_field, :asc)
   # end
-
-  # Expands parameters from `put` on the way to `UniquesBundle.put/5`.
-  @spec put_uniques_bundle(t, Indexed.prefilter(), atom) :: true
-  defp put_uniques_bundle(put, prefilter, field_name) do
-    UniquesBundle.put(put.bundle, put.index.index_ref, put.entity_name, prefilter, field_name)
-  end
-
-  # Get uniques_bundle - map and list versions of a unique values list
-  @spec get_uniques_bundle(t, Indexed.prefilter(), atom) :: t
-  def get_uniques_bundle(put, prefilter, field_name) do
-    map = Indexed.get_uniques_map(put.index, put.entity_name, prefilter, field_name)
-    list = Indexed.get_uniques_list(put.index, put.entity_name, prefilter, field_name)
-    %{put | bundle: {map, list, false}}
-  end
-
-  @doc "Remove value from the uniques bundle."
-  @spec remove_unique(t, any) :: t
-  def remove_unique(%{bundle: {counts_map, list, list_updated?}} = put, value) do
-    new_bundle =
-      case Map.fetch!(counts_map, value) do
-        1 -> {Map.delete(counts_map, value), list -- [value], true}
-        n -> {Map.put(counts_map, value, n - 1), list, list_updated?}
-      end
-
-    %{put | bundle: new_bundle}
-  end
-
-  @doc "Add a value to the uniques bundle."
-  @spec add_unique(t, any) :: t
-  def add_unique(%{bundle: {counts_map, list, list_updated?}} = put, value) do
-    new_bundle =
-      case counts_map[value] do
-        nil ->
-          first_bigger_idx = Enum.find_index(list, &(&1 > value))
-          new_list = List.insert_at(list, first_bigger_idx || -1, value)
-          new_counts_map = Map.put(counts_map, value, 1)
-          {new_counts_map, new_list, true}
-
-        orig_count ->
-          {Map.put(counts_map, value, orig_count + 1), list, list_updated?}
-      end
-
-    %{put | bundle: new_bundle}
-  end
 
   @doc "Add the id of `record` to the list of descending ids, sorting by `field`."
   @spec insert_by(t, [Indexed.id()], Entity.field()) :: [Indexed.id()]
