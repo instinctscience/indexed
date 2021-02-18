@@ -37,6 +37,12 @@ defmodule Indexed.View do
   """
   @type fingerprint :: String.t()
 
+  @typedoc """
+  Maps fingerprints to view structs.
+  Stored in the index key returned by `Indexed.views_key/1`.
+  """
+  @type views_map :: %{fingerprint => t}
+
   @doc """
   Create a unique identifier string for `params`.
 

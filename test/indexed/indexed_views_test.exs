@@ -1,6 +1,7 @@
 defmodule IndexedViewsTest do
   @moduledoc ~S/Test "view" functionality./
   use ExUnit.Case
+  import Indexed
 
   # (Who needs album names?)
   @albums [
@@ -16,7 +17,7 @@ defmodule IndexedViewsTest do
     print = "eb36c402b810b2cdc87bbaec"
 
     index =
-      Indexed.warm(
+      warm(
         albums: [
           data: {:asc, :artist, @albums},
           fields: [:artist, :media],
@@ -28,7 +29,7 @@ defmodule IndexedViewsTest do
       )
 
     view =
-      Indexed.create_view(index, :albums, print,
+      create_view(index, :albums, print,
         prefilter: {:label, "Hospital Records"},
         maintain_unique: [:id],
         filter: &String.starts_with?(&1.artist, "Lo")
@@ -39,11 +40,11 @@ defmodule IndexedViewsTest do
 
   describe "fingerprint" do
     test "typical", %{fingerprint: fingerprint, params: params} do
-      assert fingerprint == Indexed.fingerprint(params)
+      assert fingerprint == fingerprint(params)
     end
 
     test "list param", %{params: params} do
-      assert "cbcb293fbd4803362aa6b18d" == Indexed.fingerprint([{:fooz, [1, 2]} | params])
+      assert "cbcb293fbd4803362aa6b18d" == fingerprint([{:fooz, [1, 2]} | params])
     end
   end
 
@@ -55,7 +56,7 @@ defmodule IndexedViewsTest do
     }
 
     assert expected_view == view
-    assert expected_view == Indexed.get_view(index, :albums, fingerprint)
+    assert expected_view == get_view(index, :albums, fingerprint)
     assert is_function(view.filter)
   end
 
@@ -64,21 +65,43 @@ defmodule IndexedViewsTest do
       a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
       a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
 
-      assert [a1, a2] == Indexed.get_records(index, :albums, fingerprint, :artist, :asc)
-      assert %{2 => 1, 3 => 1} == Indexed.get_uniques_map(index, :albums, fingerprint, :id)
-      assert [2, 3] == Indexed.get_uniques_list(index, :albums, fingerprint, :id)
+      assert [a1, a2] == get_records(index, :albums, fingerprint, :artist, :asc)
+      assert %{2 => 1, 3 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+      assert [2, 3] == get_uniques_list(index, :albums, fingerprint, :id)
 
-      assert [a2, a1] == Indexed.get_records(index, :albums, fingerprint, :media, :desc)
+      assert [a2, a1] == get_records(index, :albums, fingerprint, :media, :desc)
     end
   end
 
   describe "with a record updated" do
     test "record is removed from the view", %{fingerprint: fingerprint, index: index} do
       album = %Album{id: 3, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
-      Indexed.put(index, :albums, album)
+      put(index, :albums, album)
 
       assert [%Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}] ==
-               Indexed.get_records(index, :albums, fingerprint, :artist, :asc)
+               get_records(index, :albums, fingerprint, :artist, :asc)
     end
+  end
+
+  test "destroy view", %{fingerprint: fingerprint, index: index} do
+    :ok = destroy_view(index, :albums, fingerprint)
+
+    refute Map.has_key?(get_index(index, views_key(:albums)), fingerprint)
+
+    should_be_nil = [
+      get_index(index, :albums, fingerprint, :artist, :asc),
+      get_index(index, :albums, fingerprint, :artist, :desc),
+      get_index(index, uniques_map_key(:albums, fingerprint, :id)),
+      get_index(index, uniques_list_key(:albums, fingerprint, :field_name))
+    ]
+
+    assert Enum.all?(should_be_nil, &is_nil/1)
+
+    # Records are still there.
+    assert %{artist: "London Elektricity"} = get(index, :albums, 3)
+  end
+
+  test "destroy non-existent view", %{index: index} do
+    assert {:error, :not_found} == Indexed.destroy_view(index, :albums, "what's a fingerprint?")
   end
 end

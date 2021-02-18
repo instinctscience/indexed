@@ -43,6 +43,7 @@ defmodule Indexed do
   defdelegate warm(args), to: Indexed.Actions.Warm, as: :run
   defdelegate put(index, entity_name, record), to: Indexed.Actions.Put, as: :run
   defdelegate create_view(index, entity_name, fp, opts), to: Indexed.Actions.CreateView, as: :run
+  defdelegate destroy_view(index, entity_name, fp), to: Indexed.Actions.DestroyView, as: :run
   defdelegate paginate(index, entity_name, params), to: Indexed.Paginator, as: :run
   defdelegate fingerprint(params), to: Indexed.View
 
