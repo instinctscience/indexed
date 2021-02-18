@@ -32,7 +32,7 @@ defmodule IndexedViewsTest do
       create_view(index, :albums, print,
         prefilter: {:label, "Hospital Records"},
         maintain_unique: [:id],
-        filter: &String.starts_with?(&1.artist, "Lo")
+        filter: &String.contains?(&1.artist, "Lo")
       )
 
     [fingerprint: print, index: index, params: params, view: view]
@@ -57,7 +57,7 @@ defmodule IndexedViewsTest do
 
     assert expected_view == view
     assert expected_view == get_view(index, :albums, fingerprint)
-    assert is_function(view.filter)
+    assert view.filter.(%{artist: "this has Lo in it"})
   end
 
   describe "just warmed up" do
@@ -73,13 +73,65 @@ defmodule IndexedViewsTest do
     end
   end
 
+  describe "with a new record" do
+    test "record is added to the view", %{fingerprint: fingerprint, index: index} do
+      album = %Album{id: 6, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
+      put(index, :albums, album)
+
+      a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
+      a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      assert [a1, a2, album] == get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [2, 3, 6] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{2 => 1, 3 => 1, 6 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+    end
+  end
+
   describe "with a record updated" do
-    test "record is removed from the view", %{fingerprint: fingerprint, index: index} do
+    test "record is added to the view", %{fingerprint: fingerprint, index: index} do
+      album = %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
+      put(index, :albums, album)
+
+      a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
+      a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      assert [a1, a2, album] == get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [2, 3, 5] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{2 => 1, 3 => 1, 5 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+    end
+
+    test "record is removed from view cuz filter", %{fingerprint: fingerprint, index: index} do
+      album = %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
+      put(index, :albums, album)
+
+      a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
+      a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      assert [a1, a2] == get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [2, 3] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{2 => 1, 3 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+    end
+
+    test "record is removed from view cuz prefilter", %{fingerprint: fingerprint, index: index} do
+      album = %Album{id: 2, label: "Haha Not Hospital", media: "CD", artist: "Logistics"}
+      put(index, :albums, album)
+
+      a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      assert [a1] == get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [3] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{3 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+    end
+
+    test "record is resorted", %{fingerprint: fingerprint, index: index} do
       album = %Album{id: 3, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
       put(index, :albums, album)
 
       assert [%Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}] ==
                get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [2] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{2 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
     end
   end
 

@@ -146,28 +146,28 @@ defmodule Indexed.Actions.Put do
     %{previous: previous, record: record} = put
 
     Enum.each(fields, fn {field_name, _} = field ->
-      record_under_prefilter = under_prefilter?(put, record, prefilter)
-      prev_under_prefilter = previous && under_prefilter?(put, previous, prefilter)
+      this_under_pf = under_prefilter?(put, record, prefilter)
+      prev_under_pf = previous && under_prefilter?(put, previous, prefilter)
       record_value = Map.get(record, field_name)
       prev_value = previous && Map.get(previous, field_name)
 
-      if previous do
-        if record_under_prefilter && prev_under_prefilter do
+      cond do
+        prev_under_pf && this_under_pf ->
           if record_value != prev_value do
             # Value differs, but we remain in the same prefilter. Remove & add.
             put_index(put, field, prefilter, [:remove, :add], newly_seen_value?)
           end
-        else
-          if prev_under_prefilter do
-            # Record is moving out of this prefilter.
-            put_index(put, field, prefilter, [:remove], newly_seen_value?)
-          end
-        end
-      else
-        if record_under_prefilter do
-          # Record is moving into this prefilter.
+
+        prev_under_pf ->
+          # Record is leaving this prefilter.
+          put_index(put, field, prefilter, [:remove], newly_seen_value?)
+
+        this_under_pf ->
+          # Record is entering this prefilter.
           put_index(put, field, prefilter, [:add], newly_seen_value?)
-        end
+
+        true ->
+          nil
       end
     end)
   end
