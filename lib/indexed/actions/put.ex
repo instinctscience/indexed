@@ -1,17 +1,19 @@
 defmodule Indexed.Actions.Put do
   @moduledoc "Holds internal state info during operations."
-  alias Indexed.{Entity, UniquesBundle}
+  alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
 
-  defstruct [:entity_name, :index, :previous, :record]
+  defstruct [:current_view, :entity_name, :index, :previous, :record]
 
   @typedoc """
+  * `:current_view` - View struct currently being updated.
   * `:entity_name` - Entity name being operated on.
   * `:index` - See `t:Indexed.t/0`.
   * `:previous` - The previous version of the record. `nil` if none.
   * `:record` - The new record being added in the put operation.
   """
   @type t :: %__MODULE__{
+          current_view: View.t() | nil,
           entity_name: atom,
           index: Indexed.t(),
           previous: Indexed.record() | nil,
@@ -29,7 +31,7 @@ defmodule Indexed.Actions.Put do
     put = %Put{entity_name: entity_name, index: index, previous: previous, record: record}
 
     # Update the record itself (by id).
-    :ets.insert(Map.fetch!(index.entities, entity_name).ref, {record.id, record})
+    :ets.insert(entity.ref, {record.id, record})
 
     # Update indexes for each prefilter.
     Enum.each(entity.prefilters, fn
@@ -64,10 +66,14 @@ defmodule Indexed.Actions.Put do
         end)
     end)
 
-    # # Update the views
-    # Enum.each(Indexed.get_views(index, entity_name), fn {fp, %{maintain_unique: mu_fields}} ->
+    # Update the data for each view.
+    with views when is_map(views) <- Indexed.get_views(index, entity_name) do
+      Enum.each(views, fn {fp, view} ->
+        update_view_data(%{put | current_view: view}, fp)
+      end)
+    end
 
-    # end)
+    :ok
   end
 
   # Loop the fields of a a `maintain_unique` option, updating uniques indexes.
@@ -134,7 +140,7 @@ defmodule Indexed.Actions.Put do
     :ok
   end
 
-  # Update indexes for each field under the prefilter.
+  # Update id indexes for each field under the prefilter.
   @spec update_index_for_fields(t, Indexed.prefilter(), [Entity.field()], boolean) :: :ok
   defp update_index_for_fields(put, prefilter, fields, newly_seen_value?) do
     %{previous: previous, record: record} = put
@@ -166,7 +172,10 @@ defmodule Indexed.Actions.Put do
     end)
   end
 
-  @spec put_index(t, Entity.field(), Indexed.prefilter(), [atom], boolean) :: :ok
+  # Update a pair of indexes by understanding if the record's id must be
+  # resorted by removing and adding it or simply one of the two if it is
+  # entering or leaving the prefilter.
+  @spec put_index(t, Entity.field(), Indexed.prefilter(), [:remove | :add], boolean) :: :ok
   defp put_index(put, {field_name, _} = field, prefilter, actions, newly_seen_value?) do
     asc_key = Indexed.index_key(put.entity_name, prefilter, field_name, :asc)
     desc_key = Indexed.index_key(put.entity_name, prefilter, field_name, :desc)
@@ -196,10 +205,10 @@ defmodule Indexed.Actions.Put do
   defp under_prefilter?(_put, _record, nil), do: true
   defp under_prefilter?(_put, record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
 
-  # defp under_prefilter?(put, %{id: id}, fingerprint) when is_binary(fingerprint) do
-  #   some_field = hd(Map.fetch!(put.index.entities, put.entity_name).fields)
-  #   id in Indexed.index_key(put.entity_name, fingerprint, some_field, :asc)
-  # end
+  defp under_prefilter?(%{current_view: %{filter: filter, prefilter: view_pf}} = put, record, fp)
+       when is_binary(fp) do
+    under_prefilter?(put, record, view_pf) && (is_nil(filter) || filter.(record))
+  end
 
   @doc "Add the id of `record` to the list of descending ids, sorting by `field`."
   @spec insert_by(t, [Indexed.id()], Entity.field()) :: [Indexed.id()]
@@ -220,5 +229,14 @@ defmodule Indexed.Actions.Put do
     first_smaller_idx = Enum.find_index(old_desc_ids, find_fun)
 
     List.insert_at(old_desc_ids, first_smaller_idx || -1, put.record.id)
+  end
+
+  # Update indexes and unique tracking for a view.
+  @spec update_view_data(t, View.fingerprint()) :: :ok
+  defp update_view_data(%{current_view: view} = put, fingerprint) do
+    %{fields: fields} = Map.fetch!(put.index.entities, put.entity_name)
+    update_index_for_fields(put, fingerprint, fields, false)
+    update_all_uniques(put, view.maintain_unique, fingerprint, false)
+    :ok
   end
 end

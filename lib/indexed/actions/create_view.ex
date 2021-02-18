@@ -5,20 +5,6 @@ defmodule Indexed.Actions.CreateView do
   alias Indexed.Actions.Warm
   alias Indexed.View
 
-  # defstruct [:entity_name, :index, :ref]
-
-  # @typedoc """
-  # * `:entity_name` - Entity name atom. (eg. `:cars`)
-  # * `:index` - Indexed struct.
-  # * `:maintain_unique` - List of field name atoms for which a list of unique
-  #   values under the view will be managed.
-  # """
-  # @type t :: %View{
-  #         entity_name: atom,
-  #         index: Indexed.t(),
-  #         maintain_unique: [atom]
-  #       }
-
   @doc """
   Build a view for a particular set of search results, indexed by the
   `:fields` config on `index`, identified by `fingerprint`.
@@ -69,6 +55,8 @@ defmodule Indexed.Actions.CreateView do
           end
         end)
 
+      view_ids = Enum.reverse(view_ids)
+
       # Save unique value info for each field in :maintain_unique option.
       for field_name <- maintain_unique do
         counts_map = Map.get(counts_map_map, field_name, %{})
@@ -81,14 +69,14 @@ defmodule Indexed.Actions.CreateView do
         :ets.insert(index.index_ref, {list_key, list})
       end
 
-      view_records = Enum.map(Enum.reverse(view_ids), &Indexed.get(index, entity_name, &1))
+      view_records = Enum.map(view_ids, &Indexed.get(index, entity_name, &1))
 
       # Save field indexes.
       for {field_name, _} = field <- entity.fields do
         sorted_ids =
           if field_name == order_field,
             do: view_ids,
-            else: Enum.sort(view_records, Warm.record_sort_fn(field))
+            else: view_records |> Enum.sort(Warm.record_sort_fn(field)) |> Enum.map(& &1.id)
 
         asc_key = Indexed.index_key(entity_name, fingerprint, field_name, :asc)
         desc_key = Indexed.index_key(entity_name, fingerprint, field_name, :desc)
@@ -98,20 +86,10 @@ defmodule Indexed.Actions.CreateView do
       end
 
       # Add view metadata to ETS.
-      view = %View{maintain_unique: maintain_unique}
+      view = %View{filter: filter, maintain_unique: maintain_unique, prefilter: prefilter}
       :ets.insert(index.index_ref, {views_key, Map.put(views, fingerprint, view)})
 
       view
     end
   end
-
-  # @doc """
-  # Add or update a record, along with the indexes to reflect the change.
-  # """
-  # @spec put(t, Indexed.record()) :: :ok
-  # def put(view, record) do
-  #   fields = get_in(view, Enum.map([:index, :entities, view.entity_name, :fields], &Access.key/1))
-
-  #   update
-  # end
 end

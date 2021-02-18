@@ -5,15 +5,28 @@ defmodule Indexed.View do
   While prefilters may be defined statically when warming an index, views
   also define prefilters, but they are tailor-made result sets which can be
   created and destroyed throughout the `t:Indexed.t/0` lifecycle.
+
+  Views define a prefilter to base its result set on. (`nil` is acceptable
+  for full result set.) Then, a `:filter` function is used to further narrow
+  the results.
   """
   alias __MODULE__
 
-  defstruct [:maintain_unique, :prefilter, :filter]
+  defstruct [:filter, :maintain_unique, :prefilter]
 
+  @typedoc """
+  * `:filter` - A function which takes a record and returns a truthy value if
+    it should be included in the result set. Required.
+  * `:maintain_unique` - List of field name atoms for which a list of unique
+    values under the view will be managed. These lists can be fetched via
+    `Indexed.get_uniques_list/4` and `Indexed.get_uniques_map/4`.
+  * `:prefilter` - The base prefilter from which the `:filter` further refines.
+    `nil` for the full record set.
+  """
   @type t :: %View{
+          filter: Indexed.filter(),
           maintain_unique: [atom],
-          prefilter: Indexed.prefilter(),
-          filter: Indexed.filter()
+          prefilter: Indexed.prefilter()
         }
 
   @typedoc """
