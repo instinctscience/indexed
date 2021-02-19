@@ -45,7 +45,7 @@ defmodule Indexed do
   defdelegate create_view(index, entity_name, fp, opts), to: Indexed.Actions.CreateView, as: :run
   defdelegate destroy_view(index, entity_name, fp), to: Indexed.Actions.DestroyView, as: :run
   defdelegate paginate(index, entity_name, params), to: Indexed.Paginator, as: :run
-  defdelegate fingerprint(params), to: Indexed.View
+  defdelegate view_fingerprint(params), to: Indexed.View, as: :fingerprint
 
   @doc "Get the ETS options to be used for any and all tables."
   @spec ets_opts :: keyword
