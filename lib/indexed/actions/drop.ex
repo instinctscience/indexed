@@ -1,5 +1,11 @@
-defmodule Indexed.Actions.Put do
-  @moduledoc "An index action where a record is being added or updated."
+defmodule Indexed.Actions.Drop do
+  @moduledoc """
+  An index action where a record is deleted.
+
+  - Drop record from id list indexes.
+  - Drop record from uniques.
+  - Drop record itself from id-keyed lookup table.
+  """
   alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
 
