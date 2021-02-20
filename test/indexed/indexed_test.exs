@@ -54,23 +54,35 @@ defmodule IndexedTest do
     end
   end
 
-  test "paginate", %{index: index} do
-    add_tesla(index)
+  describe "paginate" do
+    test "typical", %{index: index} do
+      add_tesla(index)
 
-    assert %Paginator.Page{
-             entries: [
-               %Car{id: 3, make: "Tesla"},
-               %Car{id: 2, make: "Mazda"}
-             ],
-             metadata: %Paginator.Page.Metadata{
-               after: "g3QAAAACZAACaWRhAmQABG1ha2VtAAAABU1hemRh",
-               before: nil,
-               limit: 2,
-               total_count: nil,
-               total_count_cap_exceeded: false
-             }
-           } =
-             Indexed.paginate(index, :cars, limit: 2, order_field: :make, order_direction: :desc)
+      assert %Paginator.Page{
+               entries: [
+                 %Car{id: 3, make: "Tesla"},
+                 %Car{id: 2, make: "Mazda"}
+               ],
+               metadata: %Paginator.Page.Metadata{
+                 after: "g3QAAAACZAACaWRhAmQABG1ha2VtAAAABU1hemRh",
+                 before: nil,
+                 limit: 2,
+                 total_count: nil,
+                 total_count_cap_exceeded: false
+               }
+             } =
+               Indexed.paginate(index, :cars, limit: 2, order_field: :make, order_direction: :desc)
+    end
+
+    test "no ref" do
+      assert_raise ArgumentError, fn ->
+        Indexed.paginate(%Indexed{}, :cars, limit: 2)
+      end
+    end
+
+    test "no such index", %{index: index} do
+      assert is_nil(Indexed.paginate(index, "what", limit: 2))
+    end
   end
 
   describe "warm" do

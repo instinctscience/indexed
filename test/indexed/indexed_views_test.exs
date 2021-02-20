@@ -40,11 +40,11 @@ defmodule IndexedViewsTest do
 
   describe "fingerprint" do
     test "typical", %{fingerprint: fingerprint, params: params} do
-      assert fingerprint == view_fingerprint(params)
+      assert fingerprint == Indexed.View.fingerprint(params)
     end
 
     test "list param", %{params: params} do
-      assert "cbcb293fbd4803362aa6b18d" == view_fingerprint([{:fooz, [1, 2]} | params])
+      assert "cbcb293fbd4803362aa6b18d" == Indexed.View.fingerprint([{:fooz, [1, 2]} | params])
     end
   end
 

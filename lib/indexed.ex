@@ -45,7 +45,6 @@ defmodule Indexed do
   defdelegate create_view(index, entity_name, fp, opts), to: Indexed.Actions.CreateView, as: :run
   defdelegate destroy_view(index, entity_name, fp), to: Indexed.Actions.DestroyView, as: :run
   defdelegate paginate(index, entity_name, params), to: Indexed.Paginator, as: :run
-  defdelegate view_fingerprint(params), to: Indexed.View, as: :fingerprint
 
   @doc "Get the ETS options to be used for any and all tables."
   @spec ets_opts :: keyword
@@ -67,7 +66,7 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure by key."
-  @spec get_index(Indexed.t(), String.t(), any) :: any
+  @spec get_index(Indexed.t(), String.t(), any) :: list | map | nil
   def get_index(index, index_key, default \\ nil) do
     case :ets.lookup(index.index_ref, index_key) do
       [{^index_key, val}] -> val
@@ -79,7 +78,7 @@ defmodule Indexed do
   For the given data set, get a list (sorted ascending) of unique values for
   `field_name` under `entity_name`. Returns `nil` if no data is found.
   """
-  @spec get_uniques_list(t, atom, prefilter, atom) :: any
+  @spec get_uniques_list(t, atom, prefilter, atom) :: list | nil
   def get_uniques_list(index, entity_name, prefilter, field_name) do
     get_index(index, uniques_list_key(entity_name, prefilter, field_name))
   end
