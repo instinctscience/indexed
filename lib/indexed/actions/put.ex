@@ -3,13 +3,14 @@ defmodule Indexed.Actions.Put do
   alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
 
-  defstruct [:current_view, :entity_name, :index, :previous, :record]
+  defstruct [:current_view, :entity_name, :index, :previous, :pubsub, :record]
 
   @typedoc """
   * `:current_view` - View struct currently being updated.
   * `:entity_name` - Entity name being operated on.
   * `:index` - See `t:Indexed.t/0`.
   * `:previous` - The previous version of the record. `nil` if none.
+  * `:pubsub` - If configured, a Phoenix.PubSub module to send view updates.
   * `:record` - The new record being added in the put operation.
   """
   @type t :: %__MODULE__{
@@ -17,6 +18,7 @@ defmodule Indexed.Actions.Put do
           entity_name: atom,
           index: Indexed.t(),
           previous: Indexed.record() | nil,
+          pubsub: module | nil,
           record: Indexed.record()
         }
 
@@ -26,9 +28,14 @@ defmodule Indexed.Actions.Put do
   @spec run(Indexed.t(), atom, Indexed.record()) :: :ok
   def run(index, entity_name, record) do
     %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
-    previous = Indexed.get(index, entity_name, record.id)
 
-    put = %Put{entity_name: entity_name, index: index, previous: previous, record: record}
+    put = %Put{
+      entity_name: entity_name,
+      index: index,
+      previous: Indexed.get(index, entity_name, record.id),
+      pubsub: Application.get_env(:indexed, :pubsub),
+      record: record
+    }
 
     # Update the record itself (by id).
     :ets.insert(entity.ref, {record.id, record})
@@ -141,6 +148,8 @@ defmodule Indexed.Actions.Put do
   end
 
   # Update id indexes for each field under the prefilter.
+  # If prefilter is a view fingerprint and a pubsub is configured, broadcast
+  # messages to subscribers for any changes made.
   @spec update_index_for_fields(t, Indexed.prefilter(), [Entity.field()], boolean) :: :ok
   defp update_index_for_fields(put, prefilter, fields, newly_seen_value?) do
     %{previous: previous, record: record} = put
@@ -156,15 +165,18 @@ defmodule Indexed.Actions.Put do
           if record_value != prev_value do
             # Value differs, but we remain in the same prefilter. Remove & add.
             put_index(put, field, prefilter, [:remove, :add], newly_seen_value?)
+            maybe_broadcast(put, prefilter, [:update], put.record)
           end
 
         prev_under_pf ->
           # Record is leaving this prefilter.
           put_index(put, field, prefilter, [:remove], newly_seen_value?)
+          maybe_broadcast(put, prefilter, [:remove], put.record.id)
 
         this_under_pf ->
           # Record is entering this prefilter.
           put_index(put, field, prefilter, [:add], newly_seen_value?)
+          maybe_broadcast(put, prefilter, [:add], put.record)
 
         true ->
           nil
@@ -184,21 +196,27 @@ defmodule Indexed.Actions.Put do
       if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
     end
 
-    save = fn desc_ids ->
-      :ets.insert(put.index.index_ref, {desc_key, desc_ids})
-      :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(desc_ids)})
-    end
-
     new_desc_ids =
       Enum.reduce(actions, desc_ids.(desc_key), fn
         :remove, dids -> dids -- [put.record.id]
         :add, dids -> insert_by(put, dids, field)
       end)
 
-    save.(new_desc_ids)
+    :ets.insert(put.index.index_ref, {desc_key, new_desc_ids})
+    :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(new_desc_ids)})
 
     :ok
   end
+
+  # If a pubsub is configured and the prefilter is a view fingerprint,
+  # broadcast the view change.
+  @spec maybe_broadcast(t, Indexed.prefilter(), [atom], Indexed.record()) :: :ok | nil
+  defp maybe_broadcast(%{pubsub: nil}, _, _, _), do: nil
+
+  defp maybe_broadcast(%{pubsub: pubsub}, fingerprint, event, record) when is_binary(fingerprint),
+    do: Phoenix.PubSub.broadcast(pubsub, fingerprint, {Indexed, event, record})
+
+  defp maybe_broadcast(_, _, _, _), do: nil
 
   # Returns true if the record is under the prefilter.
   @spec under_prefilter?(t, Indexed.record(), Indexed.prefilter()) :: boolean
