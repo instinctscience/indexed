@@ -165,18 +165,21 @@ defmodule Indexed.Actions.Put do
           if record_value != prev_value do
             # Value differs, but we remain in the same prefilter. Remove & add.
             put_index(put, field, prefilter, [:remove, :add], newly_seen_value?)
-            maybe_broadcast(put, prefilter, [:update], put.record)
+            msg = %{fingerprint: prefilter, record: put.record}
+            maybe_broadcast(put, prefilter, [:update], msg)
           end
 
         prev_under_pf ->
           # Record is leaving this prefilter.
           put_index(put, field, prefilter, [:remove], newly_seen_value?)
-          maybe_broadcast(put, prefilter, [:remove], put.record.id)
+          msg = %{fingerprint: prefilter, id: put.record.id}
+          maybe_broadcast(put, prefilter, [:remove], msg)
 
         this_under_pf ->
           # Record is entering this prefilter.
           put_index(put, field, prefilter, [:add], newly_seen_value?)
-          maybe_broadcast(put, prefilter, [:add], put.record)
+          msg = %{fingerprint: prefilter, record: put.record}
+          maybe_broadcast(put, prefilter, [:add], msg)
 
         true ->
           nil

@@ -133,7 +133,7 @@ defmodule Indexed do
   @doc "Get a map of fingerprints to view structs (view metadata)."
   @spec get_views(t, atom) :: %{View.fingerprint() => View.t()}
   def get_views(index, entity_name) do
-    get_index(index, views_key(entity_name))
+    get_index(index, views_key(entity_name)) || %{}
   end
 
   @doc "Get a particular view struct (view metadata) by its fingerprint."

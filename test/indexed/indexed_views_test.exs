@@ -83,7 +83,7 @@ defmodule IndexedViewsTest do
       album = %Album{id: 6, artist: "Nu:Logic", label: "Hospital Records", media: "FLAC"}
       put(index, :albums, album)
 
-      assert_receive {Indexed, [:add], ^album}
+      assert_receive {Indexed, [:add], %{fingerprint: fingerprint, record: ^album}}
 
       a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
       a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
@@ -102,7 +102,7 @@ defmodule IndexedViewsTest do
       album = %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
       put(index, :albums, album)
 
-      assert_receive {Indexed, [:add], ^album}
+      assert_receive {Indexed, [:add], %{fingerprint: fingerprint, record: ^album}}
 
       a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
       a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
@@ -119,7 +119,7 @@ defmodule IndexedViewsTest do
       album = %Album{id: 2, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
       put(index, :albums, album)
 
-      assert_receive {Indexed, [:remove], 2}
+      assert_receive {Indexed, [:remove], %{fingerprint: fingerprint, id: 2}}
 
       a = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
       assert [a] == get_records(index, :albums, fingerprint, :artist, :asc)
@@ -135,7 +135,7 @@ defmodule IndexedViewsTest do
       album = %Album{id: 2, label: "Haha Not Hospital", media: "CD", artist: "Logistics"}
       put(index, :albums, album)
 
-      assert_receive {Indexed, [:remove], 2}
+      assert_receive {Indexed, [:remove], %{fingerprint: fingerprint, id: 2}}
 
       a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
       assert [a1] == get_records(index, :albums, fingerprint, :artist, :asc)
@@ -151,7 +151,7 @@ defmodule IndexedViewsTest do
       album = %Album{id: 2, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
       put(index, :albums, album)
 
-      assert_receive {Indexed, [:update], %{id: 2}}
+      assert_receive {Indexed, [:update], %{fingerprint: fingerprint, record: album}}
 
       a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
       assert [a1, album] == get_records(index, :albums, fingerprint, :artist, :asc)

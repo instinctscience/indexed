@@ -17,6 +17,9 @@ defmodule Indexed.Actions.CreateView do
   * `:maintain_unique` - List of field name atoms for which a list of unique
     values under the prefilter will be managed. These lists can be fetched via
     `Indexed.get_uniques_list/4` and `Indexed.get_uniques_map/4`.
+  * `:params` - Keyword list of parameters which were used to generate the
+    fingerprint. If provided, they will be added to the `%Indexed.View{}` for
+    use in authorization checking by the depending application.
   * `:prefilter` - Selects a pre-partitioned section of the full data of
     `entity_name`. The filter function will be applied onto this in order to
     arrive at the view's data set. See `t:Indexed.prefilter/0`.
@@ -27,6 +30,7 @@ defmodule Indexed.Actions.CreateView do
     filter = opts[:filter]
     prefilter = opts[:prefilter]
     maintain_unique = opts[:maintain_unique] || []
+    params = opts[:params]
 
     # Get current view map to ensure we're not creating an existing one.
     views_key = Indexed.views_key(entity_name)
@@ -85,8 +89,14 @@ defmodule Indexed.Actions.CreateView do
         :ets.insert(index.index_ref, {desc_key, Enum.reverse(sorted_ids)})
       end
 
+      view = %View{
+        filter: filter,
+        maintain_unique: maintain_unique,
+        params: params,
+        prefilter: prefilter
+      }
+
       # Add view metadata to ETS.
-      view = %View{filter: filter, maintain_unique: maintain_unique, prefilter: prefilter}
       :ets.insert(index.index_ref, {views_key, Map.put(views, fingerprint, view)})
 
       view
