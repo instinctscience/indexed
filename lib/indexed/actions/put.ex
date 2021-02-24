@@ -52,9 +52,9 @@ defmodule Indexed.Actions.Put do
         record_value = Map.get(record, pf_key)
 
         handle_prefilter_value = fn value, new_value? ->
-          # This will be how it is known which instances for this pf key
-          # actually exist so users and machines alike can know which
-          # prefilters (key and val) actually exist!
+          # This will be how it is known what the unique values this pf key are
+          # so users and machines alike can know which prefilters (key and val)
+          # actually exist!
           update_uniques_for_global_prefilter(put, bundle, pf_key, value)
 
           prefilter = {pf_key, value}
