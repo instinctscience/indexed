@@ -1,6 +1,6 @@
-defmodule Indexed.PaginatorTest do
+defmodule Indexed.Actions.PaginateTest do
   use ExUnit.Case
-  import Indexed.Paginator, only: [paginate: 3]
+  import Indexed.Actions.Paginate, only: [paginate: 3]
 
   @ids_x_asc [
     "aaaa2a06-0dcf-4d9b-b2fc-31bfda45527b",

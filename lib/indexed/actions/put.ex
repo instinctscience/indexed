@@ -163,7 +163,7 @@ defmodule Indexed.Actions.Put do
       cond do
         prev_under_pf && this_under_pf ->
           if record_value != prev_value do
-            # Value differs, but we remain in the same prefilter. Remove & add.
+            # Value differs, but we remain in the same prefilter. Fix sorting.
             put_index(put, field, prefilter, [:remove, :add], newly_seen_value?)
             msg = %{fingerprint: prefilter, record: put.record}
             maybe_broadcast(put, prefilter, [:update], msg)

@@ -1,4 +1,4 @@
-defmodule Indexed.Paginator do
+defmodule Indexed.Actions.Paginate do
   @moduledoc """
   Tools for paginating in-memory data structures.
 
@@ -55,25 +55,31 @@ defmodule Indexed.Paginator do
     # of records is expensive so it is capped by default. Can be set to `:infinity`
     # in order to count all the records. Defaults to `10,000`.
   """
-  @spec run(Indexed.t(), atom, keyword) :: Paginator.Page.t() | nil
+  @spec run(Indexed.t(), atom, keyword) :: {:ok, Paginator.Page.t()} | :error
   def run(index, entity_name, params) do
     order_dir = params[:order_direction]
     order_field = params[:order_field]
     pf = params[:prefilter]
     cursor_fields = [{order_field, order_dir}, {:id, :asc}]
 
-    with ordered_ids when is_list(ordered_ids) <-
-           Indexed.get_index(index, entity_name, pf, order_field, order_dir) do
-      filter = params[:filter]
-      getter = fn id -> Indexed.get(index, entity_name, id) end
+    case Indexed.get_index(index, entity_name, pf, order_field, order_dir) do
+      ordered_ids when is_list(ordered_ids) ->
+        filter = params[:filter]
+        getter = fn id -> Indexed.get(index, entity_name, id) end
 
-      paginator_opts = Keyword.merge(params, cursor_fields: cursor_fields, filter: filter)
+        paginator_opts = Keyword.merge(params, cursor_fields: cursor_fields, filter: filter)
 
-      paginate(ordered_ids, getter, paginator_opts)
+        {:ok, paginate(ordered_ids, getter, paginator_opts)}
+
+      nil ->
+        :error
     end
   end
 
-  @doc ""
+  @doc """
+  Given the relevant, presorted list of ids and a function to fetch a record
+  by its id, build the `t:Paginator.Page.t/0` result.
+  """
   @spec paginate([id], fun, keyword) :: Page.t()
   def paginate(ordered_ids, record_getter, opts \\ []) when is_list(ordered_ids) do
     filter = opts[:filter]
