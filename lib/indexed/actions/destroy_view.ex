@@ -5,7 +5,7 @@ defmodule Indexed.Actions.DestroyView do
   alias Indexed.View
 
   @doc "Destroy a view when it is no longer needed."
-  @spec run(Indexed.t(), atom, View.fingerprint()) :: :ok | {:error, :not_found}
+  @spec run(Indexed.t(), atom, View.fingerprint()) :: :ok | :error
   def run(index, entity_name, fingerprint) do
     views_key = Indexed.views_key(entity_name)
     views = Indexed.get_index(index, views_key)
@@ -13,7 +13,7 @@ defmodule Indexed.Actions.DestroyView do
 
     case views[fingerprint] do
       nil ->
-        {:error, :not_found}
+        :error
 
       view ->
         :ets.insert(index.index_ref, {views_key, Map.delete(views, fingerprint)})

@@ -38,7 +38,7 @@ defmodule Indexed.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :phoenix_pubsub]
     ]
   end
 
@@ -56,7 +56,8 @@ defmodule Indexed.MixProject do
       # Will revert this when a new hex version is cut with my change
       # https://github.com/duffelhq/paginator/pull/96
       # {:paginator, "~> 1.0"},
-      {:paginator, github: "djthread/paginator", branch: "dialyzer-fix"}
+      {:paginator, github: "djthread/paginator", branch: "dialyzer-fix"},
+      {:phoenix_pubsub, "~> 2.0", optional: true}
     ]
   end
 

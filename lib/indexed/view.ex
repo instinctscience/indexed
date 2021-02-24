@@ -12,7 +12,7 @@ defmodule Indexed.View do
   """
   alias __MODULE__
 
-  defstruct [:filter, :maintain_unique, :prefilter]
+  defstruct [:filter, :maintain_unique, :params, :prefilter]
 
   @typedoc """
   * `:filter` - A function which takes a record and returns a truthy value if
@@ -20,12 +20,16 @@ defmodule Indexed.View do
   * `:maintain_unique` - List of field name atoms for which a list of unique
     values under the view will be managed. These lists can be fetched via
     `Indexed.get_uniques_list/4` and `Indexed.get_uniques_map/4`.
+  * `:params` - Original user params for building `:filter` and `:prefilter`.
+    These are kept mainly for authorization checking in the depending
+    application.
   * `:prefilter` - The base prefilter from which the `:filter` further refines.
     `nil` for the full record set.
   """
   @type t :: %View{
           filter: Indexed.filter(),
           maintain_unique: [atom],
+          params: keyword,
           prefilter: Indexed.prefilter()
         }
 

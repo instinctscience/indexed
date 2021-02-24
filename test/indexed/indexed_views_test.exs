@@ -12,6 +12,8 @@ defmodule IndexedViewsTest do
     %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "S.P.Y"}
   ]
 
+  @pubsub IndexedViewsTest.PubSub
+
   setup do
     params = [label: "Hospital Records", starts_with: "Lo"]
     print = "eb36c402b810b2cdc87bbaec"
@@ -28,7 +30,7 @@ defmodule IndexedViewsTest do
         ]
       )
 
-    view =
+    {:ok, view} =
       create_view(index, :albums, print,
         prefilter: {:label, "Hospital Records"},
         maintain_unique: [:id],
@@ -75,8 +77,13 @@ defmodule IndexedViewsTest do
 
   describe "with a new record" do
     test "record is added to the view", %{fingerprint: fingerprint, index: index} do
-      album = %Album{id: 6, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
+      start_pubsub()
+      Phoenix.PubSub.subscribe(@pubsub, fingerprint)
+
+      album = %Album{id: 6, artist: "Nu:Logic", label: "Hospital Records", media: "FLAC"}
       put(index, :albums, album)
+
+      assert_receive {Indexed, [:add], %{fingerprint: fingerprint, record: ^album}}
 
       a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
       a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
@@ -89,8 +96,13 @@ defmodule IndexedViewsTest do
 
   describe "with a record updated" do
     test "record is added to the view", %{fingerprint: fingerprint, index: index} do
+      start_pubsub()
+      Phoenix.PubSub.subscribe(@pubsub, fingerprint)
+
       album = %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
       put(index, :albums, album)
+
+      assert_receive {Indexed, [:add], %{fingerprint: fingerprint, record: ^album}}
 
       a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
       a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
@@ -101,20 +113,29 @@ defmodule IndexedViewsTest do
     end
 
     test "record is removed from view cuz filter", %{fingerprint: fingerprint, index: index} do
-      album = %Album{id: 5, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
+      start_pubsub()
+      Phoenix.PubSub.subscribe(@pubsub, fingerprint)
+
+      album = %Album{id: 2, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
       put(index, :albums, album)
 
-      a1 = %Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}
-      a2 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
-      assert [a1, a2] == get_records(index, :albums, fingerprint, :artist, :asc)
+      assert_receive {Indexed, [:remove], %{fingerprint: fingerprint, id: 2}}
 
-      assert [2, 3] == get_uniques_list(index, :albums, fingerprint, :id)
-      assert %{2 => 1, 3 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+      a = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      assert [a] == get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [3] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{3 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
     end
 
     test "record is removed from view cuz prefilter", %{fingerprint: fingerprint, index: index} do
+      start_pubsub()
+      Phoenix.PubSub.subscribe(@pubsub, fingerprint)
+
       album = %Album{id: 2, label: "Haha Not Hospital", media: "CD", artist: "Logistics"}
       put(index, :albums, album)
+
+      assert_receive {Indexed, [:remove], %{fingerprint: fingerprint, id: 2}}
 
       a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
       assert [a1] == get_records(index, :albums, fingerprint, :artist, :asc)
@@ -124,14 +145,19 @@ defmodule IndexedViewsTest do
     end
 
     test "record is resorted", %{fingerprint: fingerprint, index: index} do
-      album = %Album{id: 3, label: "Hospital Records", media: "FLAC", artist: "Whiney"}
+      start_pubsub()
+      Phoenix.PubSub.subscribe(@pubsub, fingerprint)
+
+      album = %Album{id: 2, label: "Hospital Records", media: "FLAC", artist: "Nu:Logic"}
       put(index, :albums, album)
 
-      assert [%Album{artist: "Logistics", id: 2, label: "Hospital Records", media: "CD"}] ==
-               get_records(index, :albums, fingerprint, :artist, :asc)
+      assert_receive {Indexed, [:update], %{fingerprint: fingerprint, record: album}}
 
-      assert [2] == get_uniques_list(index, :albums, fingerprint, :id)
-      assert %{2 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
+      a1 = %Album{artist: "London Elektricity", id: 3, label: "Hospital Records", media: "FLAC"}
+      assert [a1, album] == get_records(index, :albums, fingerprint, :artist, :asc)
+
+      assert [2, 3] == get_uniques_list(index, :albums, fingerprint, :id)
+      assert %{2 => 1, 3 => 1} == get_uniques_map(index, :albums, fingerprint, :id)
     end
   end
 
@@ -154,6 +180,12 @@ defmodule IndexedViewsTest do
   end
 
   test "destroy non-existent view", %{index: index} do
-    assert {:error, :not_found} == Indexed.destroy_view(index, :albums, "what's a fingerprint?")
+    assert :error == Indexed.destroy_view(index, :albums, "what's a fingerprint?")
+  end
+
+  # Start a test PubSub and configure indexed to use it.
+  defp start_pubsub do
+    start_supervised!({Phoenix.PubSub, name: @pubsub})
+    Application.put_env(:indexed, :pubsub, @pubsub)
   end
 end
