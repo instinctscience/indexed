@@ -30,7 +30,7 @@ defmodule IndexedViewsTest do
         ]
       )
 
-    view =
+    {:ok, view} =
       create_view(index, :albums, print,
         prefilter: {:label, "Hospital Records"},
         maintain_unique: [:id],
@@ -180,7 +180,7 @@ defmodule IndexedViewsTest do
   end
 
   test "destroy non-existent view", %{index: index} do
-    assert {:error, :not_found} == Indexed.destroy_view(index, :albums, "what's a fingerprint?")
+    assert :error == Indexed.destroy_view(index, :albums, "what's a fingerprint?")
   end
 
   # Start a test PubSub and configure indexed to use it.
