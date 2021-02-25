@@ -42,11 +42,11 @@ defmodule IndexedViewsTest do
 
   describe "fingerprint" do
     test "typical", %{fingerprint: fingerprint, params: params} do
-      assert fingerprint == view_fingerprint(params)
+      assert fingerprint == Indexed.View.fingerprint(params)
     end
 
     test "list param", %{params: params} do
-      assert "cbcb293fbd4803362aa6b18d" == view_fingerprint([{:fooz, [1, 2]} | params])
+      assert "cbcb293fbd4803362aa6b18d" == Indexed.View.fingerprint([{:fooz, [1, 2]} | params])
     end
   end
 
@@ -187,5 +187,24 @@ defmodule IndexedViewsTest do
   defp start_pubsub do
     start_supervised!({Phoenix.PubSub, name: @pubsub})
     Application.put_env(:indexed, :pubsub, @pubsub)
+  end
+
+  describe "drop" do
+    defp records(i, fp), do: Indexed.get_records(i, :albums, fp, :artist, :asc)
+    defp list(i, fp), do: Indexed.get_uniques_list(i, :albums, fp, :id)
+    defp map(i, fp), do: Indexed.get_uniques_map(i, :albums, fp, :id)
+
+    test "basic", %{fingerprint: fp, index: i} do
+      assert [%{id: id1}, %{id: id2}] = records(i, fp)
+      assert %{2 => 1, 3 => 1} == map(i, fp)
+      assert [2, 3] == list(i, fp)
+
+      Indexed.drop(i, :albums, id1)
+      Indexed.drop(i, :albums, id2)
+
+      assert [] == records(i, fp)
+      assert %{} == map(i, fp)
+      assert [] == list(i, fp)
+    end
   end
 end

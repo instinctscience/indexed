@@ -51,7 +51,7 @@ defmodule IndexedTest do
     test "non-existent", %{index: index} do
       get = fn -> Indexed.get(index, :cars, 99) end
       assert nil == get.()
-      {:error, :not_found} = Indexed.drop(index, :cars, 99)
+      :error = Indexed.drop(index, :cars, 99)
     end
   end
 
@@ -97,7 +97,7 @@ defmodule IndexedTest do
     end
 
     test "no such index", %{index: index} do
-      assert :error == Indexed.paginate(index, "what", limit: 2)
+      assert is_nil(Indexed.paginate(index, "what", limit: 2))
     end
   end
 

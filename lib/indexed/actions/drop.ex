@@ -2,247 +2,161 @@ defmodule Indexed.Actions.Drop do
   @moduledoc """
   An index action where a record is deleted.
 
-  - Drop record from id list indexes.
-  - Drop record from uniques.
+  - For each prefilter, drop record from id list indexes.
+  - For each prefilter, drop record from uniques.
   - Drop record itself from id-keyed lookup table.
   """
   alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
 
-  defstruct [:current_view, :entity_name, :index, :previous, :record]
+  defstruct [:current_view, :entity_name, :index, :record]
 
   @typedoc """
   * `:current_view` - View struct currently being updated.
   * `:entity_name` - Entity name being operated on.
   * `:index` - See `t:Indexed.t/0`.
-  * `:previous` - The previous version of the record. `nil` if none.
-  * `:record` - The new record being added in the put operation.
+  * `:record` - The new record being added in the drop operation.
   """
   @type t :: %__MODULE__{
           current_view: View.t() | nil,
           entity_name: atom,
           index: Indexed.t(),
-          previous: Indexed.record() | nil,
           record: Indexed.record()
         }
+
+  @typep id :: any
 
   @doc """
   Add or update a record, along with the indexes to reflect the change.
   """
-  @spec run(Indexed.t(), atom, Indexed.record()) :: :ok
-  def run(index, entity_name, record) do
-    %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
-    previous = Indexed.get(index, entity_name, record.id)
+  @spec run(Indexed.t(), atom, id) :: :ok | :error
+  def run(index, entity_name, record_id) do
+    case Indexed.get(index, entity_name, record_id) do
+      nil ->
+        :error
 
-    put = %Put{entity_name: entity_name, index: index, previous: previous, record: record}
+      record ->
+        %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
+        drop = %Drop{entity_name: entity_name, index: index, record: record}
 
-    # Update the record itself (by id).
-    :ets.insert(entity.ref, {record.id, record})
+        Enum.each(entity.prefilters, fn
+          {nil, pf_opts} ->
+            drop_from_index_for_fields(drop, nil, fields)
+            drop_from_all_uniques(drop, pf_opts[:maintain_unique] || [], nil)
 
-    # Update indexes for each prefilter.
-    Enum.each(entity.prefilters, fn
-      {nil, pf_opts} ->
-        update_index_for_fields(put, nil, fields, false)
-        update_all_uniques(put, pf_opts[:maintain_unique] || [], nil, false)
+          {pf_key, pf_opts} ->
+            {_, list, _, _} = bundle = UniquesBundle.get(index, entity_name, nil, pf_key)
 
-      {pf_key, pf_opts} ->
-        # Get global (prefilter nil) uniques bundle.
-        {map, list, _} = bundle = UniquesBundle.get(index, entity_name, nil, pf_key)
-        record_value = Map.get(record, pf_key)
+            handle_prefilter_value = fn value ->
+              prefilter = {pf_key, value}
 
-        handle_prefilter_value = fn value, new_value? ->
-          # This will be how it is known which instances for this pf key
-          # actually exist so users and machines alike can know which
-          # prefilters (key and val) actually exist!
-          update_uniques_for_global_prefilter(put, bundle, pf_key, value)
+              drop_from_index_for_fields(drop, prefilter, fields)
+              drop_from_all_uniques(drop, pf_opts[:maintain_unique] || [], prefilter)
 
-          prefilter = {pf_key, value}
-          update_index_for_fields(put, prefilter, fields, new_value?)
-          update_all_uniques(put, pf_opts[:maintain_unique] || [], prefilter, new_value?)
-        end
+              drop
+              |> drop_from_uniques_for_global_prefilter(bundle, pf_key, value)
+              |> drop_prefilter_indexes_if_last_instance(drop, prefilter)
+            end
 
-        # If record has a newly-seen prefilter value, add fresh indexes.
-        unless Map.has_key?(map, record_value) do
-          handle_prefilter_value.(record_value, true)
-        end
-
-        # For each existing unique value for the prefilter field, update indexes.
-        Enum.each(list, fn value ->
-          handle_prefilter_value.(value, false)
+            # For each existing unique value for the prefilter field, update indexes.
+            Enum.each(list, &handle_prefilter_value.(&1))
         end)
+
+        # Update the data for each view.
+        with views when is_map(views) <- Indexed.get_views(index, entity_name) do
+          Enum.each(views, fn {fp, view} ->
+            update_view_data(%{drop | current_view: view}, fp)
+          end)
+        end
+
+        # Delete the record itself.
+        :ets.delete(entity.ref, record_id)
+
+        :ok
+    end
+  end
+
+  # For each prefilter field, we track unique record values for each field
+  # configured for the entity to be indexed. If `UniquesBundle.remove/2`
+  # dropped the last instance of the value, then we should clean up the indexes
+  # entirely (as they would be empty and the value would be missing from global
+  # uniques, from which the question "what prefilters exist?" is answered).
+  @spec drop_prefilter_indexes_if_last_instance(UniquesBundle.t(), t, Indexed.prefilter()) :: :ok
+  defp drop_prefilter_indexes_if_last_instance({_, _, _, true}, drop, prefilter) do
+    %{fields: fields} = Map.fetch!(drop.index.entities, drop.entity_name)
+
+    Enum.each(fields, fn {field_name, _} ->
+      asc_key = Indexed.index_key(drop.entity_name, prefilter, field_name, :asc)
+      desc_key = Indexed.index_key(drop.entity_name, prefilter, field_name, :desc)
+
+      :ets.delete(drop.index.index_ref, asc_key)
+      :ets.delete(drop.index.index_ref, desc_key)
     end)
-
-    # Update the data for each view.
-    with views when is_map(views) <- Indexed.get_views(index, entity_name) do
-      Enum.each(views, fn {fp, view} ->
-        update_view_data(%{put | current_view: view}, fp)
-      end)
-    end
-
-    :ok
   end
 
-  # Loop the fields of a a `maintain_unique` option, updating uniques indexes.
-  # `new_value?` of true indicates the prefilter value is new and not indexed.
-  defp update_all_uniques(put, maintain_unique, prefilter, new_value?) do
-    for field_name <- maintain_unique do
-      prev_in_pf? = put.previous && under_prefilter?(put, put.previous, prefilter)
-      this_in_pf? = under_prefilter?(put, put.record, prefilter)
+  defp drop_prefilter_indexes_if_last_instance(_, _, _), do: :ok
 
-      bundle =
-        if new_value?,
-          do: {%{}, [], false},
-          else: UniquesBundle.get(put.index, put.entity_name, prefilter, field_name)
+  # Loop the fields of a `:maintain_unique` option, updating uniques indexes.
+  @spec drop_from_all_uniques(t, [atom], Indexed.prefilter()) :: :ok
+  defp drop_from_all_uniques(drop, maintain_unique, prefilter) do
+    Enum.each(maintain_unique, fn field_name ->
+      if under_prefilter?(drop, drop.record, prefilter) do
+        value = Map.get(drop.record, field_name)
 
-      update_uniques(put, prefilter, field_name, bundle, prev_in_pf?, this_in_pf?)
-    end
-  end
-
-  # Update any configured :maintain_unique fields for this prefilter.
-  # `prev_in_pf?` and `this_in_pf?` tell the logic whether the previous and new
-  # records are in the prefilter.
-  @spec update_uniques(t, Indexed.prefilter(), atom, UniquesBundle.t(), boolean, boolean) :: :ok
-  defp update_uniques(put, prefilter, field_name, bundle, prev_in_pf?, this_in_pf?) do
-    new_value = Map.get(put.record, field_name)
-    previous_value = put.previous && Map.get(put.previous, field_name)
-
-    bundle =
-      if put.previous do
-        bundle = if prev_in_pf?, do: UniquesBundle.remove(bundle, previous_value), else: bundle
-        if this_in_pf?, do: UniquesBundle.add(bundle, new_value), else: bundle
-      else
-        UniquesBundle.add(bundle, new_value)
+        drop.index
+        |> UniquesBundle.get(drop.entity_name, prefilter, field_name)
+        |> UniquesBundle.remove(value)
+        |> UniquesBundle.put(drop.index.index_ref, drop.entity_name, prefilter, field_name)
       end
-
-    UniquesBundle.put(bundle, put.index.index_ref, put.entity_name, prefilter, field_name)
+    end)
   end
 
   # Get and update global (prefilter nil) uniques for the field_name.
   # These field_names would be used as prefilter keys when querying prefilters.
   # `value` is the current global prefilter value being iterated over.
-  @spec update_uniques_for_global_prefilter(t, UniquesBundle.t(), atom, any) :: :ok
-  defp update_uniques_for_global_prefilter(put, bundle, field_name, value) do
-    prev_value = put.previous && Map.get(put.previous, field_name)
-    new_value = Map.get(put.record, field_name)
-    put_bundle = &UniquesBundle.put(&1, put.index.index_ref, put.entity_name, nil, field_name)
-
-    cond do
-      put.previous && prev_value == new_value ->
-        # For this prefilter key, record hasn't moved. Do nothing.
-        nil
-
-      put.previous && prev_value == value ->
-        # Record was moved to another prefilter. Remove it from this one.
-        bundle |> UniquesBundle.remove(value) |> put_bundle.()
-
-      new_value == value ->
-        # Record was moved to this prefilter. Add it.
-        bundle |> UniquesBundle.add(value) |> put_bundle.()
-
-      true ->
-        nil
+  @spec drop_from_uniques_for_global_prefilter(t, UniquesBundle.t(), atom, any) ::
+          UniquesBundle.t()
+  defp drop_from_uniques_for_global_prefilter(drop, bundle, field_name, value) do
+    if value == Map.get(drop.record, field_name) do
+      bundle
+      |> UniquesBundle.remove(value)
+      |> UniquesBundle.put(drop.index.index_ref, drop.entity_name, nil, field_name)
+    else
+      bundle
     end
-
-    :ok
   end
 
-  # Update id indexes for each field under the prefilter.
-  @spec update_index_for_fields(t, Indexed.prefilter(), [Entity.field()], boolean) :: :ok
-  defp update_index_for_fields(put, prefilter, fields, newly_seen_value?) do
-    %{previous: previous, record: record} = put
+  # Remove drop.record.id from all relevant prefilter indexes for each field.
+  @spec drop_from_index_for_fields(t, Indexed.prefilter(), [Entity.field()]) :: :ok
+  defp drop_from_index_for_fields(drop, prefilter, fields) do
+    Enum.each(fields, fn {field_name, _} ->
+      if under_prefilter?(drop, drop.record, prefilter) do
+        asc_key = Indexed.index_key(drop.entity_name, prefilter, field_name, :asc)
+        desc_key = Indexed.index_key(drop.entity_name, prefilter, field_name, :desc)
+        new_desc_ids = Indexed.get_index(drop.index, desc_key) -- [drop.record.id]
 
-    Enum.each(fields, fn {field_name, _} = field ->
-      this_under_pf = under_prefilter?(put, record, prefilter)
-      prev_under_pf = previous && under_prefilter?(put, previous, prefilter)
-      record_value = Map.get(record, field_name)
-      prev_value = previous && Map.get(previous, field_name)
-
-      cond do
-        prev_under_pf && this_under_pf ->
-          if record_value != prev_value do
-            # Value differs, but we remain in the same prefilter. Remove & add.
-            put_index(put, field, prefilter, [:remove, :add], newly_seen_value?)
-          end
-
-        prev_under_pf ->
-          # Record is leaving this prefilter.
-          put_index(put, field, prefilter, [:remove], newly_seen_value?)
-
-        this_under_pf ->
-          # Record is entering this prefilter.
-          put_index(put, field, prefilter, [:add], newly_seen_value?)
-
-        true ->
-          nil
+        :ets.insert(drop.index.index_ref, {desc_key, new_desc_ids})
+        :ets.insert(drop.index.index_ref, {asc_key, Enum.reverse(new_desc_ids)})
       end
     end)
   end
 
-  # Update a pair of indexes by understanding if the record's id must be
-  # resorted by removing and adding it or simply one of the two if it is
-  # entering or leaving the prefilter.
-  @spec put_index(t, Entity.field(), Indexed.prefilter(), [:remove | :add], boolean) :: :ok
-  defp put_index(put, {field_name, _} = field, prefilter, actions, newly_seen_value?) do
-    asc_key = Indexed.index_key(put.entity_name, prefilter, field_name, :asc)
-    desc_key = Indexed.index_key(put.entity_name, prefilter, field_name, :desc)
-
-    desc_ids = fn desc_key ->
-      if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
-    end
-
-    save = fn desc_ids ->
-      :ets.insert(put.index.index_ref, {desc_key, desc_ids})
-      :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(desc_ids)})
-    end
-
-    new_desc_ids =
-      Enum.reduce(actions, desc_ids.(desc_key), fn
-        :remove, dids -> dids -- [put.record.id]
-        :add, dids -> insert_by(put, dids, field)
-      end)
-
-    save.(new_desc_ids)
-
-    :ok
-  end
-
   # Returns true if the record is under the prefilter.
   @spec under_prefilter?(t, Indexed.record(), Indexed.prefilter()) :: boolean
-  defp under_prefilter?(_put, _record, nil), do: true
-  defp under_prefilter?(_put, record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
+  defp under_prefilter?(_drop, _record, nil), do: true
+  defp under_prefilter?(_drop, record, {pf_key, pf_val}), do: Map.get(record, pf_key) == pf_val
 
-  defp under_prefilter?(%{current_view: %{filter: filter, prefilter: view_pf}} = put, record, fp)
+  defp under_prefilter?(%{current_view: %{filter: filter, prefilter: view_pf}} = drop, record, fp)
        when is_binary(fp) do
-    under_prefilter?(put, record, view_pf) && (is_nil(filter) || filter.(record))
-  end
-
-  @doc "Add the id of `record` to the list of descending ids, sorting by `field`."
-  @spec insert_by(t, [Indexed.id()], Entity.field()) :: [Indexed.id()]
-  def insert_by(put, old_desc_ids, {name, opts}) do
-    find_fun =
-      case opts[:sort] do
-        :date_time ->
-          fn id ->
-            val = Map.get(Indexed.get(put.index, put.entity_name, id), name)
-            :lt == DateTime.compare(val, Map.get(put.record, name))
-          end
-
-        nil ->
-          this_value = Map.get(put.record, name)
-          &(Map.get(Indexed.get(put.index, put.entity_name, &1), name) < this_value)
-      end
-
-    first_smaller_idx = Enum.find_index(old_desc_ids, find_fun)
-
-    List.insert_at(old_desc_ids, first_smaller_idx || -1, put.record.id)
+    under_prefilter?(drop, record, view_pf) && (is_nil(filter) || filter.(record))
   end
 
   # Update indexes and unique tracking for a view.
   @spec update_view_data(t, View.fingerprint()) :: :ok
-  defp update_view_data(%{current_view: view} = put, fingerprint) do
-    %{fields: fields} = Map.fetch!(put.index.entities, put.entity_name)
-    update_index_for_fields(put, fingerprint, fields, false)
-    update_all_uniques(put, view.maintain_unique, fingerprint, false)
+  defp update_view_data(%{current_view: view} = drop, fingerprint) do
+    %{fields: fields} = Map.fetch!(drop.index.entities, drop.entity_name)
+    drop_from_index_for_fields(drop, fingerprint, fields)
+    drop_from_all_uniques(drop, view.maintain_unique, fingerprint)
     :ok
   end
 end
