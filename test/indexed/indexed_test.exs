@@ -60,7 +60,7 @@ defmodule IndexedTest do
   end
 
   test "index_key" do
-    assert "idx_cars[]color_asc" == Indexed.index_key("cars", nil, "color")
+    assert "idx_cars[]asc_color" == Indexed.index_key("cars", nil, "color")
   end
 
   describe "get_index" do
@@ -83,7 +83,7 @@ defmodule IndexedTest do
                  %Car{id: 2, make: "Mazda"}
                ],
                metadata: %Paginator.Page.Metadata{
-                 after: "g3QAAAACZAACaWRhAmQABG1ha2VtAAAABU1hemRh",
+                 after: "g3QAAAACZAACaWRhAmgCZAAEZGVzY2QABG1ha2VtAAAABU1hemRh",
                  before: nil,
                  limit: 2,
                  total_count: nil,
@@ -143,7 +143,7 @@ defmodule IndexedTest do
     assert [%Car{make: "Lambo"}, %Car{make: "Mazda"}, %Car{make: "Tesla"}] =
              Indexed.get_records(index, :cars, nil, :make)
 
-    after_cursor = "g3QAAAACZAACaWRhAmQABG1ha2VtAAAABU1hemRh"
+    after_cursor = "g3QAAAACZAACaWRhAmgCZAAEZGVzY2QABG1ha2VtAAAABU1hemRh"
 
     assert %Paginator.Page{
              entries: [
@@ -165,7 +165,7 @@ defmodule IndexedTest do
              ],
              metadata: %Paginator.Page.Metadata{
                after: nil,
-               before: "g3QAAAACZAACaWRhAWQABG1ha2VtAAAABUxhbWJv",
+               before: "g3QAAAACZAACaWRhAWgCZAAEZGVzY2QABG1ha2VtAAAABUxhbWJv",
                limit: 2,
                total_count: nil,
                total_count_cap_exceeded: false
