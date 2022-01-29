@@ -47,12 +47,17 @@ defmodule Indexed.Managed do
 
   defmodule State do
     @moduledoc "A piece of GenServer state for Managed."
-    defstruct [:indexed, :module, :repo, :tracking]
+    defstruct [:index, :loader, :module, :repo, :source, :tracking]
 
-    @type t :: %{
+    @typedoc """
+    * `:loader` - Ephemeral dataloader, reset to `nil` after an operation.
+    """
+    @type t :: %__MODULE__{
             index: Indexed.t(),
+            loader: Dataloader.t() | nil,
             module: module,
             repo: module,
+            source: Dataloader.Ecto.t(),
             tracking: Indexed.Managed.tracking()
           }
   end
@@ -88,6 +93,11 @@ defmodule Indexed.Managed do
   Used to manage subscriptions.
   """
   @type tracking_status :: %{Ecto.UUID.t() => non_neg_integer}
+
+  @typep data_opt :: Indexed.Actions.Warm.data_opt()
+
+  # Path to follow when warming or updating data. Uses same format as preload.
+  @typep path :: atom | list
 
   defstruct [
     :children,
@@ -132,14 +142,53 @@ defmodule Indexed.Managed do
     quote do
       import unquote(__MODULE__)
       @before_compile unquote(__MODULE__)
+      @managed_repo unquote(repo)
       Module.register_attribute(__MODULE__, :managed, accumulate: true)
 
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
-      @spec init_indexed_state :: Indexed.Managed.State.t()
-      def init_indexed_state do
-        init_indexed_state(__MODULE__, unquote(repo))
+      @spec warm(atom, data_opt, path) :: State.t()
+      def warm(entity_name, data, path) do
+        state = init_state(__MODULE__, unquote(repo))
+        warm(state, entity_name, data, path)
       end
     end
+  end
+
+  @doc "Returns a freshly initialized state for `Indexed.Managed`."
+  @spec init_state(module, module) :: State.t()
+  def init_state(mod, repo) do
+    source = Dataloader.Ecto.new(repo)
+    loader = new_loader(source)
+    tracking = Enum.reduce(mod.__tracked__(), %{}, &Map.put(&2, &1, %{}))
+    %State{loader: loader, module: mod, source: source, tracking: tracking}
+  end
+
+  @doc "Loads data into index, populating `:tracked` and subscribing as needed."
+  @spec warm(State.t(), atom, data_opt, path) :: State.t()
+  def warm(state, entity_name, data, path) do
+    # Entities for which :data is defined will be our branching-off points.
+    start_entities =
+      Enum.reduce(warm_args, [], fn {k, opts}, acc ->
+        if Keyword.get(opts, :data), do: [k | acc], else: acc
+      end)
+
+    source = Dataloader.Ecto.new(repo)
+    loader = new_loader(source)
+    tracking = Enum.reduce(mod.__tracked__(), %{}, &Map.put(&2, &1, %{}))
+    state = %State{loader: loader, module: mod, source: source, tracking: tracking}
+    warm_args = Enum.reduce(start_entities, {warm_args, state}, &do_warm/2)
+
+    %{state | index: Indexed.warm(warm_args)}
+  end
+
+  defp do_warm(entity, {warm_args, state}) do
+    %{children: children} = get_managed(mod, name)
+    # %{children: children, setup: setup} = get_managed(mod, name)
+
+    Enum.reduce(children, {warm_args, state}, fn {key, _preload_spec}, {warm_args, state} ->
+      assoc = module.__schema__(:association, key)
+      do_manage_child(acc, assoc, orig, new)
+    end)
   end
 
   @doc "Add a managed entity."
@@ -159,11 +208,11 @@ defmodule Indexed.Managed do
     end
   end
 
-  defmacro __before_compile__(env) do
-    mod = env.module
+  defmacro __before_compile__(%{module: mod}) do
     attr = &Module.get_attribute(mod, &1)
+    source = Dataloader.Ecto.new(attr.(:managed_repo))
 
-    validate_before_compile!(mod, attr.(:proc_id_prefix), attr.(:managed))
+    validate_before_compile!(mod, source, attr.(:managed))
 
     quote do
       @doc "Returns a list of all managed entity names."
@@ -190,23 +239,20 @@ defmodule Indexed.Managed do
       function which will take a record and state and return the association
       record or list of records.
       """
-      @spec __preload_fn__(atom, atom, module) :: (map, State.t() -> map | [map]) | nil
-      def __preload_fn__(name, key, repo) do
+      @spec __preload_fn__(atom, atom, Dataloader.t()) :: (map, State.t() -> map | [map]) | nil
+      def __preload_fn__(name, key, source) do
         case Enum.find(@managed, &(&1.name == name or &1.module == name)) do
           %{children: %{^key => preload_spec}} -> preload_fn(__MODULE__, preload_spec)
-          %{} = managed -> preload_fn({:repo, key, managed}, repo)
+          %{} = managed -> preload_fn({:dataloader, key, managed}, source)
           nil -> nil
         end
       end
     end
   end
 
-  @spec validate_before_compile!(module, String.t(), list) :: :ok
+  @spec validate_before_compile!(module, Dataloader.Ecto.t(), list) :: :ok
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  def validate_before_compile!(mod, proc_id_prefix, managed) do
-    (String.valid?(proc_id_prefix) && byte_size(proc_id_prefix) > 0) ||
-      raise "proc_id_prefix attribute is required but missing in #{inspect(mod)}."
-
+  def validate_before_compile!(mod, source, managed) do
     for %{children: children, module: module, name: name, subscribe: sub, unsubscribe: unsub} <-
           managed do
       inf = "in #{inspect(mod)} for #{name}"
@@ -227,7 +273,7 @@ defmodule Indexed.Managed do
         function_exported?(module, :__schema__, 1) ||
           raise "Schema module expected: #{inspect(module)} #{inf}"
 
-        preload_fn(mod, preload_spec) ||
+        preload_fn(preload_spec, source) ||
           raise "Invalid preload spec: #{inspect(preload_spec)} #{inf}"
       end
     end
@@ -363,6 +409,7 @@ defmodule Indexed.Managed do
 
           nil ->
             new_id = new.id
+            # TODOO
             state.repo.all(from r in related_module, where: field(r, ^related_key) == ^new_id)
         end
       end
@@ -556,20 +603,20 @@ defmodule Indexed.Managed do
   See `t:preload/0`.
   """
   @spec preload_fn(preload_spec, module) :: (map, State.t() -> any) | nil
-  def preload_fn({:get, name, key}, _repo) do
+  def preload_fn({:get, name, key}, _source) do
     fn record, state ->
       Indexed.get(state.index, name, Map.get(record, key))
     end
   end
 
-  def preload_fn({:get_records, name, pf_key, order_hint}, _repo) do
+  def preload_fn({:get_records, name, pf_key, order_hint}, _source) do
     fn record, state ->
       pf = if pf_key, do: {pf_key, record.id}, else: nil
       Indexed.get_records(state.index, name, pf, order_hint) || []
     end
   end
 
-  def preload_fn({:repo, key, %{module: module}}, repo) do
+  def preload_fn({:dataloader, key, %{module: module}}, source) do
     {owner_key, related} =
       case module.__schema__(:association, key) do
         %{owner_key: k, related: r} -> {k, r}
@@ -577,8 +624,13 @@ defmodule Indexed.Managed do
       end
 
     fn record, _state ->
-      with id when id != nil <- Map.get(record, owner_key),
-           do: repo.get(related, id)
+      with id when id != nil <- Map.get(record, owner_key) do
+        source
+        |> new_loader()
+        |> Dataloader.load(:db, related, id)
+        |> Dataloader.run()
+        |> Dataloader.get(:db, related, id)
+      end
     end
   end
 
@@ -611,7 +663,7 @@ defmodule Indexed.Managed do
     preload = fn
       %record_mod{} = record, key ->
         fun =
-          mod.__preload_fn__(record_mod, key, state.repo) ||
+          mod.__preload_fn__(record_mod, key, state.source) ||
             raise("No preload for #{inspect(record_mod)}.#{key} under #{inspect(mod)}.")
 
         fun.(record, state)
@@ -640,6 +692,11 @@ defmodule Indexed.Managed do
   @spec resolve_return(any) :: {:ok, any} | {:error, :not_found}
   def resolve_return(nil), do: {:error, :not_found}
   def resolve_return(val), do: {:ok, val}
+
+  @spec new_loader(Dataloader.Source.t()) :: Dataloader.t()
+  defp new_loader(source) do
+    Dataloader.add_source(Dataloader.new(), :db, source)
+  end
 
   # Unload all associations (or only `assocs`) in an ecto schema struct.
   @spec drop_associations(struct, [atom] | nil) :: struct

@@ -26,6 +26,12 @@ defmodule Indexed.Actions.Warm do
   """
   @type data_tuple :: {sort_dir :: :asc | :desc, sort_field :: atom, [Indexed.record()]}
 
+  @typedoc """
+  Data option for warming the cache. If data_tuple, the given ordering is
+  explicit and we can assume it's correct and skip a sorting routine.
+  """
+  @type data_opt :: data_tuple | [Indexed.record()] | nil
+
   @doc """
   For a set of entities, load data and indexes to ETS for each.
 
@@ -58,7 +64,7 @@ defmodule Indexed.Actions.Warm do
       via `get_uniques_list/4`.
   """
   @spec run(keyword) :: Indexed.t()
-  def run(args) do
+  def run(args \\ []) do
     index_ref = :ets.new(:indexes, Indexed.ets_opts())
 
     entities =
@@ -226,9 +232,7 @@ defmodule Indexed.Actions.Warm do
   end
 
   @doc "Normalize `warm/1`'s data option."
-  @spec resolve_data_opt({atom, atom, [Indexed.record()]} | [Indexed.record()] | nil, atom, [
-          Entity.field()
-        ]) :: {atom, atom, [Indexed.record()]}
+  @spec resolve_data_opt(data_opt, atom, [Entity.field()]) :: {atom, atom, [Indexed.record()]}
   def resolve_data_opt({dir, name, data}, entity_name, fields)
       when dir in [:asc, :desc] and is_list(data) do
     # If the data hint field isn't even being indexed, raise.
