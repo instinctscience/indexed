@@ -104,8 +104,14 @@ defmodule Indexed do
   `prefilter` - 2-element tuple (`t:prefilter/0`) indicating which
   sub-section of the data should be queried. Default is `nil` - no prefilter.
   """
-  @spec get_records(t, atom, prefilter, order_hint) :: [record] | nil
-  def get_records(index, entity_name, prefilter, order_hint) do
+  @spec get_records(t, atom, prefilter, order_hint | nil) :: [record] | nil
+  def get_records(index, entity_name, prefilter, order_hint \\ nil) do
+    k = &Access.key(&1)
+
+    order_hint =
+      order_hint ||
+        index |> get_in([k.(:entities), entity_name, k.(:fields)]) |> hd() |> elem(0)
+
     with records when is_list(records) <- get_index(index, entity_name, prefilter, order_hint) do
       Enum.map(records, &get(index, entity_name, &1))
     end

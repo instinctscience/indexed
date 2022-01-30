@@ -52,7 +52,7 @@ defmodule Indexed.MixProject do
   defp deps do
     [
       {:credo, "~> 1.5", only: [:dev, :test], runtime: false},
-      {:dataloader, "~> 1.0.9"},
+      # {:dataloader, "~> 1.0.9"},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
       {:ecto_sql, "~> 3.3"},
       {:excoveralls, "~> 0.14", only: :test},

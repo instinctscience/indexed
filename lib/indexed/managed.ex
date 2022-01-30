@@ -15,7 +15,7 @@ defmodule Indexed.Managed do
         use Indexed.Managed, repo: MyApp.Repo
 
         managed :cars, MyApp.Car,
-          children: [passengers: {:get_records, :people, nil, :name}]
+          children: [passengers: {:many, :people, :car_id, :name}]
 
         managed :people, MyApp.Person,
           get_fn: &MyApp.get_person/1,
@@ -43,21 +43,20 @@ defmodule Indexed.Managed do
   """
   import Ecto.Query
   alias Ecto.Association.{BelongsTo, Has, NotLoaded}
+  alias Indexed.Actions.Warm
   alias __MODULE__
 
   defmodule State do
     @moduledoc "A piece of GenServer state for Managed."
-    defstruct [:index, :loader, :module, :repo, :source, :tracking]
+    defstruct [:index, :module, :repo, :tracking]
 
     @typedoc """
-    * `:loader` - Ephemeral dataloader, reset to `nil` after an operation.
+    # * `:loader` - Ephemeral dataloader, reset to `nil` after an operation.
     """
     @type t :: %__MODULE__{
             index: Indexed.t(),
-            loader: Dataloader.t() | nil,
             module: module,
             repo: module,
-            source: Dataloader.Ecto.t(),
             tracking: Indexed.Managed.tracking()
           }
   end
@@ -67,9 +66,11 @@ defmodule Indexed.Managed do
   receives the record and the state and must return the preloaded value.
   (Note that the record is only used for reference -- it is not returned.)
 
-  * `{:get, entity_name, id_key}` - Preload function should get a record of
+  * `{:one, entity_name, id_key}` - Preload function should get a record of
     `entity_name` with id matching the id found under `id_key` of the record.
-  * `{:get_records, entity_name, pf_key, order_hint}` - Preload function should
+  * `{:many, entity_name, pf_key}` - Uses an order_hint default of the first
+    listed field, ascending. Otherwise, works the same as the next one.
+  * `{:many, entity_name, pf_key, order_hint}` - Preload function should
     use `Indexed.get_records/4`. If `pf_key` is not null, it will be replaced
     with `{pfkey, id}` where `id` is the record's id.
   * `{:repo, key, managed}` - Preload function should use `Repo.get/2` with the
@@ -77,8 +78,9 @@ defmodule Indexed.Managed do
     This is the default when a child/preload_spec isn't defined for an assoc.
   """
   @type preload_spec ::
-          {:get, entity_name :: atom, id_key :: atom}
-          | {:get_records, entity_name :: atom, pf_key :: atom | nil, Indexed.order_hint()}
+          {:one, entity_name :: atom, id_key :: atom}
+          | {:many, entity_name :: atom, pf_key :: atom | nil}
+          | {:many, entity_name :: atom, pf_key :: atom | nil, Indexed.order_hint()}
           | {:repo, assoc_field :: atom, managed :: t}
 
   @typedoc """
@@ -94,18 +96,22 @@ defmodule Indexed.Managed do
   """
   @type tracking_status :: %{Ecto.UUID.t() => non_neg_integer}
 
-  @typep data_opt :: Indexed.Actions.Warm.data_opt()
+  @type data_opt :: Warm.data_opt()
 
   # Path to follow when warming or updating data. Uses same format as preload.
-  @typep path :: atom | list
+  @type path :: atom | list
+
+  @typep id_key :: atom | (map -> any)
 
   defstruct [
     :children,
     :children_getters,
+    :fields,
     :id_key,
     :get_fn,
     :module,
     :name,
+    :prefilters,
     :setup,
     :subscribe,
     :unsubscribe
@@ -129,10 +135,12 @@ defmodule Indexed.Managed do
   @type t :: %Managed{
           children: %{atom => preload_spec},
           children_getters: %{atom => {module, atom}},
-          id_key: atom | (map -> any),
+          fields: [atom | Entity.field()],
+          id_key: id_key,
           get_fn: (any -> map) | nil,
           module: module,
           name: atom,
+          prefilters: [atom | keyword] | nil,
           setup: (map -> map) | nil,
           subscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil,
           unsubscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil
@@ -141,15 +149,16 @@ defmodule Indexed.Managed do
   defmacro __using__(repo: repo) do
     quote do
       import unquote(__MODULE__)
+      alias unquote(__MODULE__)
       @before_compile unquote(__MODULE__)
       @managed_repo unquote(repo)
       Module.register_attribute(__MODULE__, :managed, accumulate: true)
 
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
-      @spec warm(atom, data_opt, path) :: State.t()
-      def warm(entity_name, data, path) do
+      @spec warm(atom, Managed.data_opt(), Managed.path()) :: State.t()
+      def warm(entity_name, data_opt, path) do
         state = init_state(__MODULE__, unquote(repo))
-        warm(state, entity_name, data, path)
+        warm(state, entity_name, data_opt, path)
       end
     end
   end
@@ -157,38 +166,115 @@ defmodule Indexed.Managed do
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
   @spec init_state(module, module) :: State.t()
   def init_state(mod, repo) do
-    source = Dataloader.Ecto.new(repo)
-    loader = new_loader(source)
     tracking = Enum.reduce(mod.__tracked__(), %{}, &Map.put(&2, &1, %{}))
-    %State{loader: loader, module: mod, source: source, tracking: tracking}
+    %State{module: mod, repo: repo, tracking: tracking}
   end
 
   @doc "Loads data into index, populating `:tracked` and subscribing as needed."
   @spec warm(State.t(), atom, data_opt, path) :: State.t()
-  def warm(state, entity_name, data, path) do
-    # Entities for which :data is defined will be our branching-off points.
-    start_entities =
-      Enum.reduce(warm_args, [], fn {k, opts}, acc ->
-        if Keyword.get(opts, :data), do: [k | acc], else: acc
+  def warm(%{module: mod} = state, entity_name, data_opt, path) do
+    warm_args =
+      Enum.reduce(mod.__managed__(), [], fn entity, acc ->
+        data = if entity == entity_name, do: data_opt, else: []
+        managed = mod.__managed__(entity)
+
+        Keyword.put(acc, entity,
+          data: data,
+          fields: managed.fields,
+          prefilters: managed.prefilters
+        )
       end)
+      |> IO.inspect(label: "schwing!")
 
-    source = Dataloader.Ecto.new(repo)
-    loader = new_loader(source)
-    tracking = Enum.reduce(mod.__tracked__(), %{}, &Map.put(&2, &1, %{}))
-    state = %State{loader: loader, module: mod, source: source, tracking: tracking}
-    warm_args = Enum.reduce(start_entities, {warm_args, state}, &do_warm/2)
+    state = %{state | index: Indexed.warm(warm_args)}
 
-    %{state | index: Indexed.warm(warm_args)}
+    state =
+      if tracked?(mod.__managed__(entity_name)) do
+        state.index
+        |> IO.inspect(label: "INDEX")
+        |> Indexed.get_records(entity_name |> IO.inspect(label: "entity_name"), nil)
+        |> IO.inspect(label: "ok")
+        |> Enum.reduce(state, &add_tracked(&2, entity_name, id(mod, entity_name, &1)))
+      else
+        state
+      end
+      |> IO.inspect(label: "staaat")
+
+    path = if is_list(path), do: path, else: [path]
+    IO.inspect(path, label: "path")
+    fields = mod.__managed__(entity_name).fields
+    {_, _, records} = Warm.resolve_data_opt(data_opt, entity_name, fields)
+
+    Enum.reduce(path, state, &do_warm(entity_name, records, &1, &2))
   end
 
-  defp do_warm(entity, {warm_args, state}) do
-    %{children: children} = get_managed(mod, name)
-    # %{children: children, setup: setup} = get_managed(mod, name)
+  defp do_warm(entity_name, records, path_entry, state) when is_atom(path_entry) do
+    do_warm(entity_name, records, {path_entry, []}, state)
+  end
 
-    Enum.reduce(children, {warm_args, state}, fn {key, _preload_spec}, {warm_args, state} ->
-      assoc = module.__schema__(:association, key)
-      do_manage_child(acc, assoc, orig, new)
-    end)
+  defp do_warm(entity_name, records, {path_entry, sub_path}, state) do
+    IO.inspect({entity_name, {path_entry, sub_path}}, label: "do_warm")
+    # IO.inspect(state, label: "statee")
+    %{children: children} = get_managed(state.module, entity_name)
+    # %{children: children, setup: setup} = get_managed(mod, name)
+    IO.inspect(children, label: "children")
+    spec = Map.fetch!(children, path_entry)
+
+    state = do_load_assoc(entity_name, records, spec, state)
+
+    if(is_list(sub_path), do: sub_path, else: [sub_path])
+    |> IO.inspect(label: "okshit")
+
+    # |> Enum.reduce(state, do_warm())
+
+    state
+    # Map.fetch!(children, field)
+
+    # Enum.reduce(children, {warm_args, state}, fn {key, _preload_spec}, {warm_args, state} ->
+    #   assoc = module.__schema__(:association, key)
+    #   do_manage_child(acc, assoc, orig, new)
+    # end)
+  end
+
+  defp do_load_assoc(entity_name, records, {:one, assoc_entity_name, fkey}, state) do
+    IO.inspect({entity_name, assoc_entity_name, fkey}, label: "ONE")
+
+    %{id_key: id_key} = state.module.__managed__(entity_name)
+
+    %{module: assoc_mod, name: assoc_name} =
+      state.module.__managed__(assoc_entity_name)
+      |> IO.inspect(label: "assocmod")
+
+    {ids, state} =
+      Enum.reduce(records, {[], state}, fn %{^fkey => id}, {acc, acc_state} ->
+        if id,
+          do: {[id | acc], add_tracked(acc_state, assoc_name, id)},
+          else: {acc, acc_state}
+      end)
+
+    records = state.repo.all(from i in assoc_mod, where: field(i, ^id_key) in ^ids)
+    Enum.each(records, &Indexed.put(state.index, assoc_name, &1))
+
+    state
+  end
+
+  defp do_load_assoc(entity_name, records, {:many, assoc_entity_name, fkey}, state) do
+    IO.inspect({entity_name, assoc_entity_name, fkey}, label: "MANY")
+    %{id_key: id_key} = state.module.__managed__(entity_name)
+
+    %{id_key: assoc_id_key, module: assoc_mod, name: assoc_name} =
+      assoc_managed = state.module.__managed__(assoc_entity_name)
+
+    ids = Enum.map(records, &id(id_key, &1))
+    records = state.repo.all(from(i in assoc_mod, where: field(i, ^fkey) in ^ids))
+    Enum.each(records, &Indexed.put(state.index, assoc_name, &1))
+
+    if tracked?(assoc_managed) do
+      fun = &add_tracked(&2, assoc_entity_name, id(assoc_id_key, &1))
+      Enum.reduce(records, state, fun)
+    else
+      state
+    end
   end
 
   @doc "Add a managed entity."
@@ -197,10 +283,12 @@ defmodule Indexed.Managed do
       @managed %Managed{
         children: Map.new(unquote(opts[:children] || [])),
         children_getters: Map.new(unquote(opts[:children_getters] || [])),
+        fields: unquote(opts[:fields]),
         get_fn: unquote(opts[:get_fn]),
         id_key: unquote(opts[:id_key] || :id),
         module: unquote(module),
         name: unquote(name),
+        prefilters: unquote(opts[:prefilters]),
         setup: unquote(opts[:setup]),
         subscribe: unquote(opts[:subscribe]),
         unsubscribe: unquote(opts[:unsubscribe])
@@ -210,9 +298,8 @@ defmodule Indexed.Managed do
 
   defmacro __before_compile__(%{module: mod}) do
     attr = &Module.get_attribute(mod, &1)
-    source = Dataloader.Ecto.new(attr.(:managed_repo))
 
-    validate_before_compile!(mod, source, attr.(:managed))
+    validate_before_compile!(mod, attr.(:managed_repo), attr.(:managed))
 
     quote do
       @doc "Returns a list of all managed entity names."
@@ -239,20 +326,20 @@ defmodule Indexed.Managed do
       function which will take a record and state and return the association
       record or list of records.
       """
-      @spec __preload_fn__(atom, atom, Dataloader.t()) :: (map, State.t() -> map | [map]) | nil
-      def __preload_fn__(name, key, source) do
+      @spec __preload_fn__(atom, atom, module) :: (map, State.t() -> map | [map]) | nil
+      def __preload_fn__(name, key, repo) do
         case Enum.find(@managed, &(&1.name == name or &1.module == name)) do
-          %{children: %{^key => preload_spec}} -> preload_fn(__MODULE__, preload_spec)
-          %{} = managed -> preload_fn({:dataloader, key, managed}, source)
+          %{children: %{^key => preload_spec}} -> preload_fn(preload_spec, repo)
+          %{} = managed -> preload_fn({:repo, key, managed}, repo)
           nil -> nil
         end
       end
     end
   end
 
-  @spec validate_before_compile!(module, Dataloader.Ecto.t(), list) :: :ok
+  @spec validate_before_compile!(module, module, list) :: :ok
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  def validate_before_compile!(mod, source, managed) do
+  def validate_before_compile!(mod, repo, managed) do
     for %{children: children, module: module, name: name, subscribe: sub, unsubscribe: unsub} <-
           managed do
       inf = "in #{inspect(mod)} for #{name}"
@@ -273,7 +360,7 @@ defmodule Indexed.Managed do
         function_exported?(module, :__schema__, 1) ||
           raise "Schema module expected: #{inspect(module)} #{inf}"
 
-        preload_fn(preload_spec, source) ||
+        preload_fn(preload_spec, repo) ||
           raise "Invalid preload spec: #{inspect(preload_spec)} #{inf}"
       end
     end
@@ -578,13 +665,14 @@ defmodule Indexed.Managed do
   end
 
   # Get the indexing "id" of a particular managed record.
+  @spec id(id_key | nil, map) :: any
+  defp id(id_key, record) when is_function(id_key), do: id_key.(record)
+  defp id(nil, record), do: raise("No id_key found for #{inspect(record)}")
+  defp id(id_key, record), do: Map.get(record, id_key)
+
   @spec id(module, atom, map) :: any
   defp id(mod, name, record) do
-    case mod.__managed__(name) do
-      %{id_key: id_key} when is_function(id_key) -> id_key.(record)
-      %{id_key: id_key} -> Map.get(record, id_key)
-      nil -> raise ":#{name} must have a managed declaration on #{inspect(mod)}."
-    end
+    name |> mod.__managed__() |> Map.get(:id_key) |> id(record)
   end
 
   @doc """
@@ -593,7 +681,9 @@ defmodule Indexed.Managed do
   Being tracked means that `:get_fn` is defined.
   """
   @spec tracked?(Managed.t()) :: boolean
-  def tracked?(%{get_fn: fun}) when is_function(fun), do: true
+  def tracked?(%{subscribe: sf, unsubscribe: uf}) when is_function(sf) and is_function(uf),
+    do: true
+
   def tracked?(_), do: false
 
   @doc """
@@ -603,20 +693,24 @@ defmodule Indexed.Managed do
   See `t:preload/0`.
   """
   @spec preload_fn(preload_spec, module) :: (map, State.t() -> any) | nil
-  def preload_fn({:get, name, key}, _source) do
+  def preload_fn({:one, name, key}, _repo) do
     fn record, state ->
       Indexed.get(state.index, name, Map.get(record, key))
     end
   end
 
-  def preload_fn({:get_records, name, pf_key, order_hint}, _source) do
+  def preload_fn({:many, name, pf_key}, repo) do
+    preload_fn({:many, name, pf_key, nil}, repo)
+  end
+
+  def preload_fn({:many, name, pf_key, order_hint}, _repo) do
     fn record, state ->
       pf = if pf_key, do: {pf_key, record.id}, else: nil
       Indexed.get_records(state.index, name, pf, order_hint) || []
     end
   end
 
-  def preload_fn({:dataloader, key, %{module: module}}, source) do
+  def preload_fn({:repo, key, %{module: module}}, repo) do
     {owner_key, related} =
       case module.__schema__(:association, key) do
         %{owner_key: k, related: r} -> {k, r}
@@ -624,13 +718,8 @@ defmodule Indexed.Managed do
       end
 
     fn record, _state ->
-      with id when id != nil <- Map.get(record, owner_key) do
-        source
-        |> new_loader()
-        |> Dataloader.load(:db, related, id)
-        |> Dataloader.run()
-        |> Dataloader.get(:db, related, id)
-      end
+      with id when id != nil <- Map.get(record, owner_key),
+           do: repo.get(related, id)
     end
   end
 
@@ -663,7 +752,7 @@ defmodule Indexed.Managed do
     preload = fn
       %record_mod{} = record, key ->
         fun =
-          mod.__preload_fn__(record_mod, key, state.source) ||
+          mod.__preload_fn__(record_mod, key, state.repo) ||
             raise("No preload for #{inspect(record_mod)}.#{key} under #{inspect(mod)}.")
 
         fun.(record, state)
@@ -692,11 +781,6 @@ defmodule Indexed.Managed do
   @spec resolve_return(any) :: {:ok, any} | {:error, :not_found}
   def resolve_return(nil), do: {:error, :not_found}
   def resolve_return(val), do: {:ok, val}
-
-  @spec new_loader(Dataloader.Source.t()) :: Dataloader.t()
-  defp new_loader(source) do
-    Dataloader.add_source(Dataloader.new(), :db, source)
-  end
 
   # Unload all associations (or only `assocs`) in an ecto schema struct.
   @spec drop_associations(struct, [atom] | nil) :: struct

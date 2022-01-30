@@ -4,7 +4,8 @@ defmodule Blog do
   """
   alias Indexed.Test.Repo
 
-  @pubsub inspect(__MODULE__)
+  @pubsub Blog
+  @context Blog
 
   def subscribe_to_user(id) do
     subscribe(user_subtopic(id))
@@ -23,6 +24,14 @@ defmodule Blog do
   def unsubscribe(topic) do
     Phoenix.PubSub.unsubscribe(@pubsub, topic)
   end
+
+  @spec broadcast(any, atom, String.t(), [atom]) :: :ok | {:error, any}
+  def broadcast({:ok, %User{id: id} = result}, event) do
+    full_topic = user_subtopic(id)
+    Phoenix.PubSub.broadcast(@pubsub, full_topic, {@context, event, result})
+  end
+
+  def broadcast(result, _, _, _), do: result
 
   def all_posts, do: Repo.all(Post)
   def all_comments, do: Repo.all(Comment)
@@ -45,5 +54,9 @@ defmodule Blog do
 
   def create_user(name) do
     %User{} |> User.changeset(%{name: name}) |> Repo.insert()
+  end
+
+  def update_user(user, params) do
+    user |> User.changeset(params) |> Repo.update() |> broadcast([:user, :update])
   end
 end
