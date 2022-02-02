@@ -1,20 +1,18 @@
-defmodule User do
+defmodule FlarePiece do
   @moduledoc false
   use Ecto.Schema
   import Ecto.Changeset
 
-  schema "users" do
-    has_many :flare_pieces, FlarePiece
+  schema "flare_pieces" do
+    belongs_to :user, User
     field :name, :string
-    timestamps()
   end
 
   @type t :: %__MODULE__{}
 
   def changeset(struct_or_changeset, params) do
     struct_or_changeset
-    |> cast(params, [:name])
+    |> cast(params, [:name, :user_id])
     |> validate_required([:name])
-    |> cast_assoc(:flare_pieces)
   end
 end

@@ -42,6 +42,7 @@ defmodule Indexed.Managed do
     manage the subscription. These must both be declared or neither.
   """
   import Ecto.Query
+  import Indexed.Helpers, only: [normalize_preload: 1]
   alias Ecto.Association.{BelongsTo, Has, NotLoaded}
   alias Indexed.Actions.Warm
   alias __MODULE__
@@ -60,6 +61,9 @@ defmodule Indexed.Managed do
             tracking: Indexed.Managed.tracking()
           }
   end
+
+  @typedoc "For convenience, state is also accepted within a wrapping map."
+  @type state_or_wrapped :: State.t() | %{managed: State.t()}
 
   @typedoc """
   A preload spec which is used to build the preload function. This function
@@ -186,96 +190,103 @@ defmodule Indexed.Managed do
       end)
       |> IO.inspect(label: "schwing!")
 
+    fields = mod.__managed__(entity_name).fields
+    {_, _, records} = Warm.resolve_data_opt(data_opt, entity_name, fields)
+
     state = %{state | index: Indexed.warm(warm_args)}
 
     state =
       if tracked?(mod.__managed__(entity_name)) do
-        state.index
-        |> IO.inspect(label: "INDEX")
-        |> Indexed.get_records(entity_name |> IO.inspect(label: "entity_name"), nil)
-        |> IO.inspect(label: "ok")
-        |> Enum.reduce(state, &add_tracked(&2, entity_name, id(mod, entity_name, &1)))
+        Enum.reduce(records, state, &add_tracked(&2, entity_name, id(mod, entity_name, &1)))
       else
         state
       end
-      |> IO.inspect(label: "staaat")
 
-    path = if is_list(path), do: path, else: [path]
-    IO.inspect(path, label: "path")
-    fields = mod.__managed__(entity_name).fields
-    {_, _, records} = Warm.resolve_data_opt(data_opt, entity_name, fields)
-
-    Enum.reduce(path, state, &do_warm(entity_name, records, &1, &2))
+    path
+    |> normalize_preload()
+    |> IO.inspect(label: "iiii")
+    |> Enum.reduce(state, fn {path_entry, sub_path}, acc ->
+      %{children: children} = get_managed(acc.module, entity_name)
+      # %{children: children, setup: setup} = get_managed(mod, name)
+      spec = Map.fetch!(children, path_entry)
+      do_load_assoc(entity_name, records, spec, sub_path, acc)
+    end)
+    |> IO.inspect(label: "WIN")
   end
 
-  defp do_warm(entity_name, records, path_entry, state) when is_atom(path_entry) do
-    do_warm(entity_name, records, {path_entry, []}, state)
-  end
-
-  defp do_warm(entity_name, records, {path_entry, sub_path}, state) do
-    IO.inspect({entity_name, {path_entry, sub_path}}, label: "do_warm")
-    # IO.inspect(state, label: "statee")
-    %{children: children} = get_managed(state.module, entity_name)
-    # %{children: children, setup: setup} = get_managed(mod, name)
-    IO.inspect(children, label: "children")
-    spec = Map.fetch!(children, path_entry)
-
-    state = do_load_assoc(entity_name, records, spec, state)
-
-    if(is_list(sub_path), do: sub_path, else: [sub_path])
-    |> IO.inspect(label: "okshit")
-
-    # |> Enum.reduce(state, do_warm())
-
-    state
-    # Map.fetch!(children, field)
-
-    # Enum.reduce(children, {warm_args, state}, fn {key, _preload_spec}, {warm_args, state} ->
-    #   assoc = module.__schema__(:association, key)
-    #   do_manage_child(acc, assoc, orig, new)
-    # end)
-  end
-
-  defp do_load_assoc(entity_name, records, {:one, assoc_entity_name, fkey}, state) do
-    IO.inspect({entity_name, assoc_entity_name, fkey}, label: "ONE")
-
+  defp do_load_assoc(entity_name, records, {:one, assoc_entity_name, fkey}, sub_path, state) do
     %{id_key: id_key} = state.module.__managed__(entity_name)
+    %{module: assoc_mod, name: assoc_name} = state.module.__managed__(assoc_entity_name)
 
-    %{module: assoc_mod, name: assoc_name} =
-      state.module.__managed__(assoc_entity_name)
-      |> IO.inspect(label: "assocmod")
+    ids = Enum.map(records, &Map.fetch!(&1, fkey))
+    state = Enum.reduce(ids, state, &add_tracked(&2, assoc_name, &1))
 
-    {ids, state} =
-      Enum.reduce(records, {[], state}, fn %{^fkey => id}, {acc, acc_state} ->
-        if id,
-          do: {[id | acc], add_tracked(acc_state, assoc_name, id)},
-          else: {acc, acc_state}
-      end)
+    already_ids = get_index(state, assoc_entity_name) || []
+    ids = Enum.reject(ids, &(&1 in already_ids))
+    assoc_records = state.repo.all(from i in assoc_mod, where: field(i, ^id_key) in ^ids)
+    Enum.each(assoc_records, &Indexed.put(state.index, assoc_name, &1))
 
-    records = state.repo.all(from i in assoc_mod, where: field(i, ^id_key) in ^ids)
-    Enum.each(records, &Indexed.put(state.index, assoc_name, &1))
+    Enum.reduce(sub_path, state, fn {path_entry, sub_sub_path}, acc ->
+      %{children: children} = acc.module.__managed__(assoc_entity_name)
+      spec = Map.fetch!(children, path_entry)
 
-    state
+      do_load_assoc(assoc_entity_name, assoc_records, spec, sub_sub_path, acc)
+    end)
   end
 
-  defp do_load_assoc(entity_name, records, {:many, assoc_entity_name, fkey}, state) do
-    IO.inspect({entity_name, assoc_entity_name, fkey}, label: "MANY")
+  defp do_load_assoc(entity_name, records, {:many, assoc_entity_name, fkey}, sub_path, state) do
     %{id_key: id_key} = state.module.__managed__(entity_name)
 
     %{id_key: assoc_id_key, module: assoc_mod, name: assoc_name} =
       assoc_managed = state.module.__managed__(assoc_entity_name)
 
-    ids = Enum.map(records, &id(id_key, &1))
-    records = state.repo.all(from(i in assoc_mod, where: field(i, ^fkey) in ^ids))
-    Enum.each(records, &Indexed.put(state.index, assoc_name, &1))
+    idx = get_index(state, entity_name) || []
+    already_ids = Enum.reduce(records, [], &if(&1.id in idx, do: &2, else: [&1.id | &2]))
 
-    if tracked?(assoc_managed) do
-      fun = &add_tracked(&2, assoc_entity_name, id(assoc_id_key, &1))
-      Enum.reduce(records, state, fun)
-    else
-      state
-    end
+    ids =
+      Enum.reduce(records, [], fn record, acc ->
+        id = id(id_key, record)
+        if id in already_ids, do: acc, else: [id | acc]
+      end)
+
+    assoc_records = state.repo.all(from(i in assoc_mod, where: field(i, ^fkey) in ^ids))
+
+    Enum.each(assoc_records, &Indexed.put(state.index, assoc_name, &1))
+
+    state =
+      if tracked?(assoc_managed) do
+        fun = &add_tracked(&2, assoc_entity_name, id(assoc_id_key, &1))
+        Enum.reduce(assoc_records, state, fun)
+      else
+        state
+      end
+
+    Enum.reduce(sub_path, state, fn {path_entry, sub_sub_path}, acc ->
+      %{children: children} = acc.module.__managed__(assoc_entity_name)
+      spec = Map.fetch!(children, path_entry)
+
+      do_load_assoc(assoc_entity_name, assoc_records, spec, sub_sub_path, acc)
+    end)
   end
+
+  # defp do_warm(entity_name, records, {path_entry, sub_path}, state) do
+  #   IO.inspect({entity_name, {path_entry, sub_path}}, label: "do_warm")
+  #   %{children: children} = get_managed(state.module, entity_name)
+  #   # %{children: children, setup: setup} = get_managed(mod, name)
+  #   spec = Map.fetch!(children, path_entry)
+
+  #   state = do_load_assoc(entity_name, records, spec, sub_path, state)
+
+  #   # Enum.reduce(sub_path, state, do_warm())
+
+  #   state
+  #   # Map.fetch!(children, field)
+
+  #   # Enum.reduce(children, {warm_args, state}, fn {key, _preload_spec}, {warm_args, state} ->
+  #   #   assoc = module.__schema__(:association, key)
+  #   #   do_manage_child(acc, assoc, orig, new)
+  #   # end)
+  # end
 
   @doc "Add a managed entity."
   defmacro managed(name, module, opts \\ []) do
@@ -368,13 +379,52 @@ defmodule Indexed.Managed do
     :ok
   end
 
+  @spec get(state_or_wrapped, atom, Indexed.id()) :: any
+  def get(%{managed: managed_state}, name, id) do
+    get(managed_state, name, id)
+  end
+
+  def get(%{index: index}, name, id) do
+    Indexed.get(index, name, id)
+  end
+
+  @spec get_index(state_or_wrapped, atom, Indexed.prefilter()) :: list | map | nil
+  def get_index(state, name, prefilter \\ nil, order_hint \\ nil)
+
+  def get_index(%{managed: managed_state}, name, prefilter, order_hint) do
+    get_index(managed_state, name, prefilter, order_hint)
+  end
+
+  def get_index(%{index: index}, name, prefilter, order_hint) do
+    Indexed.get_index(index, name, prefilter, order_hint)
+  end
+
+  @spec get_records(state_or_wrapped, atom, Indexed.prefilter(), Indexed.order_hint() | nil) ::
+          [Indexed.record()] | nil
+  def get_records(state, name, prefilter, order_hint \\ nil)
+
+  def get_records(%{managed: managed_state}, name, prefilter, order_hint) do
+    get_records(managed_state, name, prefilter, order_hint)
+  end
+
+  def get_records(%{index: index}, name, prefilter, order_hint) do
+    Indexed.get_records(index, name, prefilter, order_hint)
+  end
+
   @doc """
   Add or remove a managed record, its tracked records, subscriptions, and
   tracking counters as needed according to `orig` being removed and `new` added.
 
   The `name` entity should be declared as `managed`.
+
+  If `state` is a map, wrapping the managed state under a `:managed` key, it
+  will be used as appropriate and returned re-wrapped.
   """
-  @spec manage(State.t(), atom, map | nil, map | nil) :: State.t()
+  @spec manage(state_or_wrapped, atom, map | nil, map | nil) :: state_or_wrapped
+  def manage(%{managed: managed_state} = state, name, orig, new) do
+    %{state | managed: manage(managed_state, name, orig, new)}
+  end
+
   def manage(%{module: mod} = state, name, orig, new) do
     log("MANAGE #{orig && orig.__struct__} -> #{new && new.__struct__}...")
     %{children: children, module: module, setup: setup} = get_managed(mod, name)
@@ -419,50 +469,51 @@ defmodule Indexed.Managed do
 
   @spec do_manage_child(State.t(), Ecto.Association.t(), map | nil, map | nil) :: State.t()
   defp do_manage_child(%{module: mod} = state, %BelongsTo{cardinality: :one} = assoc, orig, new) do
-    %{field: field, owner_key: owner_key, related: related} =
-      assoc
-      |> log(label: "SHIT")
+    %{field: field, owner_key: owner_key, related: related} = assoc
+    # |> log(label: "SHIT")
 
     %{get_fn: get_fn, module: module, name: name} = assoc_managed = get_managed(mod, related)
 
-    log(orig, label: "oooooOOORIG #{field} - #{owner_key}")
-    log(new, label: "oooooNNNEW #{field} - #{owner_key}")
+    # log(orig, label: "oooooOOORIG #{field} - #{owner_key}")
+    # log(new, label: "oooooNNNEW #{field} - #{owner_key}")
 
     assoc_orig =
       with %NotLoaded{} <- orig && Map.get(orig, field) do
         orig
         |> Managed.preload(state, field)
-        |> IO.inspect(label: "pppppp")
+        # |> IO.inspect(label: "pppppp")
         |> Map.get(field)
-        |> log(label: "LLLOADED ORIG")
+
+        # |> log(label: "LLLOADED ORIG")
       end
 
     # assoc_new = new && Map.get(new, field)
     assoc_new =
       with %NotLoaded{} <- new && Map.get(new, field) do
-        IO.inspect({get_fn, new, Map.get(new, owner_key)}, label: "CHECKCHECK")
+        # IO.inspect({get_fn, new, Map.get(new, owner_key)}, label: "CHECKCHECK")
 
         case get_fn && new && Map.get(new, owner_key) do
           nil -> nil
           id -> get_fn.(id)
         end
-        |> log(label: "LLLOADED NEW")
+
+        # |> log(label: "LLLOADED NEW")
       end
 
-    log(assoc_orig, label: "ASSOC ORIG")
-    log(assoc_new, label: "ASSOC NEW")
+    # log(assoc_orig, label: "ASSOC ORIG")
+    # log(assoc_new, label: "ASSOC NEW")
 
     track = &do_track(&1, &2, name, assoc, orig, new)
     mod_or_nil? = fn it, m -> match?(%^m{}, it) or is_nil(it) end
 
     if mod_or_nil?.(assoc_orig, module) and mod_or_nil?.(assoc_new, module) and
          not (is_nil(assoc_orig) and is_nil(assoc_new)) do
-      log(label: "WORD1")
+      # log(label: "WORD1")
       # Assoc in orig/new was preloaded. Manage recursively.
       state = if tracked?(assoc_managed), do: track.(state, false), else: state
       manage(state, name, assoc_orig, assoc_new)
     else
-      log(label: "WORD2")
+      # log(label: "WORD2")
       if tracked?(assoc_managed), do: track.(state, true), else: state
     end
   end
@@ -719,7 +770,7 @@ defmodule Indexed.Managed do
 
     fn record, _state ->
       with id when id != nil <- Map.get(record, owner_key),
-           do: repo.get(related, id)
+           do: repo.get(related, id) |> IO.inspect(label: "REPO GOT")
     end
   end
 

@@ -13,6 +13,11 @@ defmodule Indexed.Test.Repo.Migrations.CreateCar do
       timestamps()
     end
 
+    create table(:flare_pieces) do
+      add(:name, :string)
+      add(:user_id, references(:users))
+    end
+
     create table(:posts) do
       add(:author_id, references(:users))
       add(:content, :string)

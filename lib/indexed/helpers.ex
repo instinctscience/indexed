@@ -30,4 +30,28 @@ defmodule Indexed.Helpers do
     do: Enum.map(hint, &hd(normalize_order_hint(&1)))
 
   def normalize_order_hint(hint), do: [{:asc, hint}]
+
+  @doc """
+  Convert a preload shorthand into a predictable data structure.
+
+  ## Examples
+
+      iex> normalize_preload(:foo)
+      [foo: []]
+      iex> normalize_preload([:foo, bar: :baz])
+      [foo: [], bar: [baz: []]]
+  """
+  @spec normalize_preload(atom | list) :: [tuple]
+  def normalize_preload(preload) do
+    preload
+    |> is_list()
+    |> if(do: preload, else: [preload])
+    |> Enum.map(&do_normalize_preload/1)
+  end
+
+  @spec do_normalize_preload(atom | tuple | list) :: [tuple]
+  defp do_normalize_preload(item) when is_atom(item), do: {item, []}
+  defp do_normalize_preload(item) when is_list(item), do: Enum.map(item, &do_normalize_preload/1)
+  defp do_normalize_preload({item, sub}) when is_atom(sub), do: {item, [{sub, []}]}
+  defp do_normalize_preload({item, sub}) when is_list(sub), do: {item, do_normalize_preload(sub)}
 end

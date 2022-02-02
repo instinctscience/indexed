@@ -65,9 +65,18 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure."
-  @spec get_index(t, atom, prefilter, order_hint) :: list | map | nil
-  def get_index(index, entity_name, prefilter, order_hint) do
+  @spec get_index(t, atom, prefilter, order_hint | nil) :: list | map | nil
+  def get_index(index, entity_name, prefilter, order_hint) when is_atom(entity_name) do
+    k = &Access.key(&1)
+
+    order_hint =
+      order_hint ||
+        index |> get_in([k.(:entities), entity_name, k.(:fields)]) |> hd() |> elem(0)
+
+    # index_key = index_key(entity_name, prefilter, order_hint)
+
     get_index(index, index_key(entity_name, prefilter, order_hint))
+    # |> IO.inspect(label: "INDEX #{index_key}")
   end
 
   @doc "Get an index data structure by key."
