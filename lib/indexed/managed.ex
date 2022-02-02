@@ -55,7 +55,7 @@ defmodule Indexed.Managed do
     # * `:loader` - Ephemeral dataloader, reset to `nil` after an operation.
     """
     @type t :: %__MODULE__{
-            index: Indexed.t(),
+            index: Indexed.t() | nil,
             module: module,
             repo: module,
             tracking: Indexed.Managed.tracking()
@@ -139,7 +139,7 @@ defmodule Indexed.Managed do
   @type t :: %Managed{
           children: %{atom => preload_spec},
           children_getters: %{atom => {module, atom}},
-          fields: [atom | Entity.field()],
+          fields: [atom | Indexed.Entity.field()],
           id_key: id_key,
           get_fn: (any -> map) | nil,
           module: module,
@@ -188,7 +188,6 @@ defmodule Indexed.Managed do
           prefilters: managed.prefilters
         )
       end)
-      |> IO.inspect(label: "schwing!")
 
     fields = mod.__managed__(entity_name).fields
     {_, _, records} = Warm.resolve_data_opt(data_opt, entity_name, fields)
@@ -204,14 +203,12 @@ defmodule Indexed.Managed do
 
     path
     |> normalize_preload()
-    |> IO.inspect(label: "iiii")
     |> Enum.reduce(state, fn {path_entry, sub_path}, acc ->
       %{children: children} = get_managed(acc.module, entity_name)
       # %{children: children, setup: setup} = get_managed(mod, name)
       spec = Map.fetch!(children, path_entry)
       do_load_assoc(entity_name, records, spec, sub_path, acc)
     end)
-    |> IO.inspect(label: "WIN")
   end
 
   defp do_load_assoc(entity_name, records, {:one, assoc_entity_name, fkey}, sub_path, state) do
@@ -268,25 +265,6 @@ defmodule Indexed.Managed do
       do_load_assoc(assoc_entity_name, assoc_records, spec, sub_sub_path, acc)
     end)
   end
-
-  # defp do_warm(entity_name, records, {path_entry, sub_path}, state) do
-  #   IO.inspect({entity_name, {path_entry, sub_path}}, label: "do_warm")
-  #   %{children: children} = get_managed(state.module, entity_name)
-  #   # %{children: children, setup: setup} = get_managed(mod, name)
-  #   spec = Map.fetch!(children, path_entry)
-
-  #   state = do_load_assoc(entity_name, records, spec, sub_path, state)
-
-  #   # Enum.reduce(sub_path, state, do_warm())
-
-  #   state
-  #   # Map.fetch!(children, field)
-
-  #   # Enum.reduce(children, {warm_args, state}, fn {key, _preload_spec}, {warm_args, state} ->
-  #   #   assoc = module.__schema__(:association, key)
-  #   #   do_manage_child(acc, assoc, orig, new)
-  #   # end)
-  # end
 
   @doc "Add a managed entity."
   defmacro managed(name, module, opts \\ []) do

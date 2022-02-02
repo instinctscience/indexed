@@ -45,7 +45,6 @@ defmodule Indexed.ManagedTest do
   end
 
   test "basic", %{bs_pid: bs_pid} do
-    IO.inspect(label: "READY1")
     # %{id: bob_id} = bob = Blog.get_user("bob")
     # {:ok, _} = Blog.update_user(bob, %{name: "fred"})
 
@@ -61,9 +60,9 @@ defmodule Indexed.ManagedTest do
                  comments: [
                    %{content: "woah", author: %{name: "lee", flare_pieces: [%{name: "wig"}]}},
                    %{
-                     id: comment_id,
+                     id: _comment_id,
                      content: "wow",
-                     author: %{id: jill_id, name: "jill", flare_pieces: [_, _]}
+                     author: %{id: _jill_id, name: "jill", flare_pieces: [_, _]}
                    }
                  ]
                },
@@ -77,7 +76,6 @@ defmodule Indexed.ManagedTest do
              BlogServer.paginate(
                preload: [author: :flare_pieces, comments: [author: :flare_pieces]]
              )
-             |> IO.inspect(label: "hi")
 
     assert %{
              managed: %{

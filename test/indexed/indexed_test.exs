@@ -99,7 +99,7 @@ defmodule IndexedTest do
     end
 
     test "no such index", %{index: index} do
-      assert is_nil(Indexed.paginate(index, "what", limit: 2, order_by: :lol))
+      assert is_nil(Indexed.paginate(index, :what, limit: 2, order_by: :lol))
     end
   end
 
