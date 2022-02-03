@@ -52,6 +52,9 @@ defmodule Indexed.ManagedTest do
 
     # assert %{name: "fred"} = BlogServer.run(& &1.get.(:users, bob_id))
 
+    :sys.get_state(bs_pid) |> IO.inspect(label: "stat")
+    BlogServer.run(& &1.get_records.(:users)) |> IO.inspect(label: "users")
+
     assert %{
              entries: [
                %{
@@ -60,7 +63,7 @@ defmodule Indexed.ManagedTest do
                  comments: [
                    %{content: "woah", author: %{name: "lee", flare_pieces: [%{name: "wig"}]}},
                    %{
-                     id: _comment_id,
+                     id: comment_id,
                      content: "wow",
                      author: %{id: _jill_id, name: "jill", flare_pieces: [_, _]}
                    }
@@ -77,16 +80,19 @@ defmodule Indexed.ManagedTest do
                preload: [author: :flare_pieces, comments: [author: :flare_pieces]]
              )
 
-    assert %{
-             managed: %{
-               tracking: %{
-                 flare_pieces: %{1 => 1, 2 => 1, 3 => 1, 4 => 1},
-                 users: %{1 => 4, 2 => 1, 3 => 1}
-               }
-             }
-           } = :sys.get_state(bs_pid)
+    # assert %{
+    #          managed: %{
+    #            tracking: %{
+    #              flare_pieces: %{1 => 1, 2 => 1, 3 => 1, 4 => 1},
+    #              users: %{1 => 4, 2 => 1, 3 => 1}
+    #            }
+    #          }
+    #        } = :sys.get_state(bs_pid)
 
     # {:ok, _} = Blog.delete_comment(comment_id)
+
+    #        :sys.get_state(bs_pid)
+    #        |> IO.inspect(label: "endstate")
 
     # {:ok, _} = Blog.update_user(Blog.get_user("jill"), %{name: "jessica"})
   end

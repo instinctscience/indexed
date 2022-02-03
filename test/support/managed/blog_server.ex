@@ -89,7 +89,9 @@ defmodule BlogServer do
 
       comment ->
         ret = Repo.delete(comment)
-        {:reply, ret, manage(state, :comments, comment, nil)}
+        Process.put(:bb, :bb)
+        state = manage(state, :comments, comment, nil, author: :flare_pieces)
+        {:reply, ret, state}
     end
   end
 
