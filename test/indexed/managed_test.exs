@@ -89,7 +89,8 @@ defmodule Indexed.ManagedTest do
              managed: %{tracking: %{users: %{1 => 4, 2 => 1, 3 => 1}}}
            } = :sys.get_state(bs_pid)
 
-    # {:ok, _} = Blog.delete_comment(comment_id)
+           IO.inspect(label: "redeh")
+    {:ok, _} = Blog.delete_comment(comment_id)
 
     # {:ok, _} = Blog.update_user(Blog.get_user("jill"), %{name: "jessica"})
   end
