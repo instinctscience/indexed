@@ -5,6 +5,7 @@ defmodule BlogServer do
 
   managed :posts, Post,
     fields: [:inserted_at],
+    top: true,
     children: [
       author: {:one, :users, :author_id},
       comments: {:many, :comments, :post_id}
@@ -15,7 +16,7 @@ defmodule BlogServer do
     prefilters: [:post_id],
     children: [
       author: {:one, :users, :author_id},
-      post: {:one, :posts, :post_id}
+      # post: {:one, :posts, :post_id}
     ]
 
   managed :users, User,
