@@ -85,12 +85,18 @@ defmodule Indexed.ManagedTest do
     #  :sys.get_state(bs_pid)
     #  |> IO.inspect(label: "endstate")
 
-    assert %{
-             managed: %{tracking: %{users: %{1 => 4, 2 => 1, 3 => 1}}}
-           } = :sys.get_state(bs_pid)
+    state = fn -> :sys.get_state(bs_pid) end
+    tracking = fn -> state.().managed.tracking end
 
-           IO.inspect(label: "redeh")
+    assert %{users: %{1 => 4, 2 => 1, 3 => 1}} = tracking.()
+
+    IO.inspect(label: "redeh")
+
     {:ok, _} = Blog.delete_comment(comment_id)
+
+    assert %{users: %{1 => 4, 3 => 1}} = tracking.()
+
+    # todo - subscription handling on many-type assocs
 
     # {:ok, _} = Blog.update_user(Blog.get_user("jill"), %{name: "jessica"})
   end
