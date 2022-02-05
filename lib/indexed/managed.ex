@@ -29,7 +29,7 @@ defmodule Indexed.Managed do
   must be specified. If needed, a keyword list of options should follow.
 
   * `:children` - Keyword list with association fields as keys and
-    `t:preload_spec/0`s as vals. This is used when recursing in `manage/4` as
+    `t:assoc_spec/0`s as vals. This is used when recursing in `manage/4` as
     well as when resolving. If an undeclared association is resolved,
     `Repo.get/2` will be used as a fallback.
   * `:get_fn` - Function which takes an ID and returns the record from the
@@ -111,9 +111,9 @@ defmodule Indexed.Managed do
     with `{pfkey, id}` where `id` is the record's id.
   * `{:repo, key, managed}` - Preload function should use `Repo.get/2` with the
     assoc's module and the id in the foreign key field for `key` in the record.
-    This is the default when a child/preload_spec isn't defined for an assoc.
+    This is the default when a child/assoc_spec isn't defined for an assoc.
   """
-  @type preload_spec ::
+  @type assoc_spec ::
           {:one, entity_name :: atom, id_key :: atom}
           | {:many, entity_name :: atom, pf_key :: atom | nil}
           | {:many, entity_name :: atom, pf_key :: atom | nil, order_hint}
@@ -161,7 +161,7 @@ defmodule Indexed.Managed do
   ]
 
   @typedoc """
-  * `:children` - Map with assoc field name keys `t:preload_spec/0` values.
+  * `:children` - Map with assoc field name keys `t:assoc_spec/0` values.
     When this entity is managed, all children will also be managed and so on,
     recursively.
   * `:id_key` - Field name atom which carries the id to index with or a
@@ -178,7 +178,7 @@ defmodule Indexed.Managed do
   * `:unsubscribe` - 1-arity function which unsubscribes to changes by id.
   """
   @type t :: %Managed{
-          children: %{atom => preload_spec},
+          children: %{atom => assoc_spec},
           children_getters: %{atom => {module, atom}},
           fields: [atom | Indexed.Entity.field()],
           id_key: id_key,
@@ -268,13 +268,17 @@ defmodule Indexed.Managed do
     %{state | tmp: nil}
   end
 
-  # Do the first iteration
+  # Handle adding and removing just the top-level records themselves.
   @spec do_start(state, t, [record], [record]) :: state
   defp do_start(state, managed, orig_records, new_records) do
     state = Enum.reduce(new_records, state, &add(&2, managed, &1))
     Enum.reduce(orig_records, state, &rm(&2, managed, &1))
   end
 
+  # Add a record accoding to its managed config:
+  # - If not tracked, just add to the index.
+  # - If tracked, also update tmp tracking data.
+  @spec add(state, t, record) :: state
   defp add(state, %{name: name, tracked: false}, record) do
     put(state, name, drop_associations(record))
     state
@@ -286,37 +290,38 @@ defmodule Indexed.Managed do
     tmp = Access.key(:tmp)
     state = put_in(state, [tmp, :tracking, name, id], cur + 1)
     # state = update_in(state, [tmp, :tracking, name], &Map.put(&1, id, cur + 1))
-    put_in(state, [tmp, :records, name, id], record)
+    put_in(state, [tmp, :records, name, id], drop_associations(record))
   end
 
+  # Remove a record accoding to its managed config:
+  # - If not tracked, just remove it from the index.
+  # - If tracked, also update tmp tracking data.
+  @spec rm(state, t, id) :: state
   defp rm(state, %{name: name, tracked: false}, id) do
     drop(state, name, id)
     state
   end
 
-  defp rm(state, %{id_key: id_key, name: name}, id) do
+  defp rm(state, %{name: name}, id) do
     cur = tracking_tmp(state, name, id)
     cur > 0 || raise "Couldn't remove reference for #{name}: already at 0."
-    tmp = Access.key(:tmp)
-    put_in(state, [tmp, :tracking, name, id], cur - 1)
+    put_in(state, [Access.key(:tmp), :tracking, name, id], cur - 1)
   end
 
-  # do_manage
+  # Handle managing associations according to `path` but not records themselves.
   @spec do_manage_path(state, atom, add_or_rm, [record], keyword) :: state
   defp do_manage_path(state, entity_name, action, records, path) do
     Enum.reduce(path, state, fn {path_entry, sub_path}, acc ->
       log({path_entry, sub_path}, label: "do_manage_path path")
       %{children: children} = get_managed(acc.module, entity_name)
       spec = Map.fetch!(children, path_entry)
-
       do_manage_assoc(acc, entity_name, path_entry, spec, action, records, sub_path)
-      # |> log(label: "okayy")
     end)
   end
 
-  # manage call:
-  # do_manage_path(state, name, to_list.(orig), to_list.(new), normalize_preload(path))
-
+  # Manage a single associations across a set of records.
+  # Then recursively handle associations according to sub_path therein.
+  @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword) :: state
   defp do_manage_assoc(
          state,
          entity_name,
@@ -326,7 +331,7 @@ defmodule Indexed.Managed do
          records,
          sub_path
        ) do
-    assoc_managed = get_managed(state, assoc_name)
+    %{module: assoc_mod} = assoc_managed = get_managed(state, assoc_name)
 
     log({entity_name, path_entry, assoc_managed.name, fkey}, label: "ONE add")
     log(records, label: "records")
@@ -334,7 +339,7 @@ defmodule Indexed.Managed do
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
         assoc_id = Map.fetch!(record, fkey)
-        assoc = get_assoc_somehow(acc_state, path_entry, assoc_managed, assoc_id, record)
+        assoc = assoc_from_record(record, path_entry) || state.repo.get(assoc_mod, assoc_id)
         {add(acc_state, assoc_managed, assoc), [assoc | acc_assoc_records]}
       end)
 
@@ -417,11 +422,6 @@ defmodule Indexed.Managed do
     do_manage_path(state, assoc_entity_name, :add, assoc_records, sub_path)
   end
 
-  @spec get_assoc_somehow(state, atom, t, id, record) :: record
-  defp get_assoc_somehow(state, path_entry, %{module: assoc_mod}, assoc_id, record) do
-    assoc_from_record(record, path_entry) || state.repo.get(assoc_mod, assoc_id)
-  end
-
   # Get the tracking (number of references) for the given entity and id.
   @spec tracking(map, atom, any) :: non_neg_integer
   defp tracking(%{tracking: tracking}, name, id),
@@ -434,6 +434,8 @@ defmodule Indexed.Managed do
     get.(tt) || get.(t) || 0
   end
 
+  # Attempt to lift an association directly from its parent.
+  @spec assoc_from_record(record, atom) :: record | nil
   defp assoc_from_record(record, path_entry) do
     case record do
       %{^path_entry => %NotLoaded{}} -> nil
@@ -443,8 +445,7 @@ defmodule Indexed.Managed do
   end
 
   @doc """
-  Add or remove a managed record, its tracked records, subscriptions, and
-  tracking counters as needed according to `orig` being removed and `new` added.
+  Add, remove or update a managed record or list of them.
 
   The `name` entity should be declared as `managed`.
 
@@ -460,7 +461,7 @@ defmodule Indexed.Managed do
   end
 
   def manage(state, name, orig, new, path) do
-    IO.inspect("MANAGE #{orig && orig.__struct__} -> #{new && new.__struct__}...")
+    log("MANAGE #{orig && orig.__struct__} -> #{new && new.__struct__}...")
 
     # new = if new && setup, do: setup.(new), else: new
 
@@ -532,7 +533,7 @@ defmodule Indexed.Managed do
       @spec __preload_fn__(atom, atom, module) :: (map, Managed.State.t() -> map | [map]) | nil
       def __preload_fn__(name, key, repo) do
         case Enum.find(@managed, &(&1.name == name or &1.module == name)) do
-          %{children: %{^key => preload_spec}} -> preload_fn(preload_spec, repo)
+          %{children: %{^key => assoc_spec}} -> preload_fn(assoc_spec, repo)
           %{} = managed -> preload_fn({:repo, key, managed}, repo)
           nil -> nil
         end
@@ -540,7 +541,10 @@ defmodule Indexed.Managed do
     end
   end
 
-  @doc "Set the `:tracked` option on the managed structs."
+  @doc """
+  Set the `:tracked` option on the managed structs where another references it
+  with a `:one` association.
+  """
   @spec rewrite_managed([t]) :: [t]
   def rewrite_managed(manageds) do
     set_tracked = fn list, entity ->
@@ -569,7 +573,7 @@ defmodule Indexed.Managed do
       if (sub != nil and is_nil(unsub)) or (unsub != nil and is_nil(sub)),
         do: raise("Must have both :subscribe and :unsubscribe or neither #{inf}.")
 
-      for {key, preload_spec} <- children do
+      for {key, assoc_spec} <- children do
         related =
           case module.__schema__(:association, key) do
             %{related: r} -> r
@@ -582,14 +586,15 @@ defmodule Indexed.Managed do
         function_exported?(module, :__schema__, 1) ||
           raise "Schema module expected: #{inspect(module)} #{inf}"
 
-        preload_fn(preload_spec, repo) ||
-          raise "Invalid preload spec: #{inspect(preload_spec)} #{inf}"
+        preload_fn(assoc_spec, repo) ||
+          raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"
       end
     end
 
     :ok
   end
 
+  @doc "Invoke `Indexed.get/3` with a wrapped state for convenience."
   @spec get(state_or_wrapped, atom, id) :: any
   def get(%{managed: managed_state}, name, id) do
     get(managed_state, name, id)
@@ -599,6 +604,7 @@ defmodule Indexed.Managed do
     Indexed.get(index, name, id)
   end
 
+  @doc "Invoke `Indexed.put/3` with a wrapped state for convenience."
   @spec put(state_or_wrapped, atom, record) :: :ok
   def put(%{managed: managed_state}, name, record) do
     put(managed_state, name, record)
@@ -608,6 +614,7 @@ defmodule Indexed.Managed do
     Indexed.put(index, name, record)
   end
 
+  @doc "Invoke `Indexed.drop/3` with a wrapped state for convenience."
   @spec drop(state_or_wrapped, atom, id) :: :ok | :error
   def drop(%{managed: managed_state}, name, id) do
     drop(managed_state, name, id)
@@ -617,6 +624,7 @@ defmodule Indexed.Managed do
     Indexed.drop(index, name, id)
   end
 
+  @doc "Invoke `Indexed.get_index/4` with a wrapped state for convenience."
   @spec get_index(state_or_wrapped, atom, Indexed.prefilter()) :: list | map | nil
   def get_index(state, name, prefilter \\ nil, order_hint \\ nil)
 
@@ -628,6 +636,7 @@ defmodule Indexed.Managed do
     Indexed.get_index(index, name, prefilter, order_hint)
   end
 
+  @doc "Invoke `Indexed.get_records/4` with a wrapped state for convenience."
   @spec get_records(state_or_wrapped, atom, Indexed.prefilter(), order_hint | nil) ::
           [record] | nil
   def get_records(state, name, prefilter, order_hint \\ nil)
@@ -640,11 +649,15 @@ defmodule Indexed.Managed do
     Indexed.get_records(index, name, prefilter, order_hint)
   end
 
+  # Invoke :subscribe function for the given entity id if one is defined.
+  @spec maybe_subscribe(module, atom, id) :: any
   defp maybe_subscribe(mod, name, id) do
     with %{subscribe: sub} when is_function(sub) <- get_managed(mod, name),
          do: sub.(id) |> log(label: "SUBSCRIBED #{name} #{id}")
   end
 
+  # Invoke :unsubscribe function for the given entity id if one is defined.
+  @spec maybe_unsubscribe(module, atom, id) :: any
   defp maybe_unsubscribe(mod, name, id) do
     with %{unsubscribe: usub} when is_function(usub) <- get_managed(mod, name),
          do: usub.(id) |> log(label: "UNSUBSCRIBED #{name} #{id}")
@@ -676,7 +689,6 @@ defmodule Indexed.Managed do
 
   # Get the indexing "id" of a particular managed record.
   @spec id(t | id_key | nil, map) :: any
-  # defp id(%{id_key: id_key}, record), do: id(id_key, record)
   defp id(id_key, record) when is_function(id_key), do: id_key.(record)
   defp id(nil, record), do: raise("No id_key found for #{inspect(record)}")
   defp id(id_key, record), do: Map.get(record, id_key)
@@ -687,7 +699,7 @@ defmodule Indexed.Managed do
 
   See `t:preload/0`.
   """
-  @spec preload_fn(preload_spec, module) :: (map, state -> any) | nil
+  @spec preload_fn(assoc_spec, module) :: (map, state -> any) | nil
   def preload_fn({:one, name, key}, _repo) do
     fn record, state ->
       Indexed.get(state.index, name, Map.get(record, key))
