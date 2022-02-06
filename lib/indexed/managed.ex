@@ -235,16 +235,23 @@ defmodule Indexed.Managed do
     |> do_finish()
   end
 
+  # Handle adding and removing just the top-level records themselves.
+  @spec do_start(state, t, [record], [record]) :: state
+  defp do_start(state, managed, orig_records, new_records) do
+    state = Enum.reduce(new_records, state, &add(&2, managed, &1))
+    Enum.reduce(orig_records, state, &rm(&2, managed, &1.id))
+  end
+
   defp do_finish(%{module: mod} = state) do
     tk = Access.key(:tracking)
     put_tracking = &put_in(&1, [tk, &2, &3], &4)
+    get_tmp_record = &get_in(state.tmp.records, [&1, &2])
 
     handle = fn
       st, name, id, orig_c, new_c when orig_c == 0 and new_c > 0 ->
         log({name, id, orig_c, new_c}, label: "had none, now have some")
         maybe_subscribe(mod, name, id)
-        record = get_in(state.tmp.records, [name, id])
-        put(st, name, record)
+        put(st, name, get_tmp_record.(name, id))
         put_tracking.(st, name, id, new_c)
 
       st, name, id, orig_c, new_c when orig_c > 0 and new_c == 0 ->
@@ -252,6 +259,10 @@ defmodule Indexed.Managed do
         maybe_unsubscribe(mod, name, id)
         drop(st, name, id)
         update_in(st, [tk, name], &Map.delete(&1, id))
+
+      st, name, id, _orig_c, new_c when new_c > 0 ->
+        put(st, name, get_tmp_record.(name, id))
+        put_tracking.(st, name, id, new_c)
 
       st, name, id, _, new_c ->
         put_tracking.(st, name, id, new_c)
@@ -268,23 +279,18 @@ defmodule Indexed.Managed do
     %{state | tmp: nil}
   end
 
-  # Handle adding and removing just the top-level records themselves.
-  @spec do_start(state, t, [record], [record]) :: state
-  defp do_start(state, managed, orig_records, new_records) do
-    state = Enum.reduce(new_records, state, &add(&2, managed, &1))
-    Enum.reduce(orig_records, state, &rm(&2, managed, &1.id))
-  end
-
-  # Add a record accoding to its managed config:
+  # Add a record according to its managed config:
   # - If not tracked, just add to the index.
   # - If tracked, also update tmp tracking data.
   @spec add(state, t, record) :: state
   defp add(state, %{name: name, tracked: false}, record) do
+    log("ADD not tracked: #{name}: #{record.id}")
     put(state, name, drop_associations(record))
     state
   end
 
   defp add(state, %{id_key: id_key, name: name}, record) do
+    log("ADD tracked: #{name}: #{record.id}")
     id = id(id_key, record)
     cur = tracking_tmp(state, name, id)
     tmp = Access.key(:tmp)
@@ -293,7 +299,7 @@ defmodule Indexed.Managed do
     put_in(state, [tmp, :records, name, id], drop_associations(record))
   end
 
-  # Remove a record accoding to its managed config:
+  # Remove a record according to its managed config:
   # - If not tracked, just remove it from the index.
   # - If tracked, also update tmp tracking data.
   @spec rm(state, t, id) :: state
@@ -480,17 +486,15 @@ defmodule Indexed.Managed do
       i -> i
     end
 
-    managed = get_managed(state, name)
-    new = to_list.(new)
-    orig = to_list.(orig)
-
     path = normalize_preload(path)
+    new_records = to_list.(new)
+    orig_records = to_list.(orig)
 
     state
     |> State.init_tmp()
-    |> do_start(managed, orig, new)
-    |> do_manage_path(name, :add, new, path)
-    |> do_manage_path(name, :rm, orig, path)
+    |> do_start(get_managed(state, name), orig_records, new_records)
+    |> do_manage_path(name, :add, new_records, path)
+    |> do_manage_path(name, :rm, orig_records, path)
     |> do_finish()
   end
 

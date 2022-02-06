@@ -117,8 +117,7 @@ defmodule BlogServer do
 
   @impl GenServer
   def handle_info({Blog, [:user, :update], new} = msg, state) do
-    IO.inspect(new, label: "UsER")
-    Blog.maybe_send(msg)
+    Blog.maybe_send({:got, msg})
     %{} = orig = get(state, :users, new.id)
     {:noreply, manage(state, :users, orig, new)}
   end
