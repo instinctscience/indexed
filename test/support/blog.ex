@@ -16,10 +16,12 @@ defmodule Blog do
   def flare_piece_subtopic(id), do: "flare_piece-#{id}"
 
   def subscribe(topic) do
+    maybe_send([:subscribe, topic])
     Phoenix.PubSub.subscribe(@pubsub, topic)
   end
 
   def unsubscribe(topic) do
+    maybe_send([:unsubscribe, topic])
     Phoenix.PubSub.unsubscribe(@pubsub, topic)
   end
 
@@ -60,5 +62,13 @@ defmodule Blog do
 
   def delete_comment(comment_id) do
     BlogServer.call({:delete_comment, comment_id})
+  end
+
+  # If a feedback pid is registered for the current process, send it a message.
+  def maybe_send(msg) do
+    with pid when is_pid(pid) <- Process.get(:feedback_pid),
+         do: send(pid, msg)
+
+    :ok
   end
 end

@@ -15,7 +15,7 @@ defmodule BlogServer do
     fields: [:inserted_at],
     prefilters: [:post_id],
     children: [
-      author: {:one, :users, :author_id},
+      author: {:one, :users, :author_id}
       # post: {:one, :posts, :post_id}
     ]
 
@@ -48,16 +48,13 @@ defmodule BlogServer do
 
   @impl GenServer
   def init(opts) do
+    Process.put(:feedback_pid, opts[:feedback_pid])
+
     posts = Blog.all_posts()
     a_path = {:author, :flare_pieces}
     posts_path = [a_path, comments: [a_path]]
 
-    {:ok,
-     %{
-       feedback_pid: opts[:feedback_pid],
-       managed: warm(:posts, posts, posts_path)
-     }}
-    # |> IO.inspect(label: "INIT")
+    {:ok, warm(:posts, posts, posts_path)}
   end
 
   @impl GenServer
@@ -90,7 +87,7 @@ defmodule BlogServer do
 
       comment ->
         ret = Repo.delete(comment)
-        Process.put(:bb, :bb)
+        # Process.put(:bb, :bb)
         state = manage(state, :comments, comment, nil, author: :flare_pieces)
         {:reply, ret, state}
     end
@@ -109,11 +106,11 @@ defmodule BlogServer do
   def handle_call({:paginate, opts}, _from, state) do
     defaults = [
       order_by: :inserted_at,
-      prepare: &resolve(&1, state.managed, preload: opts[:preload] || [])
+      prepare: &preload(&1, state, opts[:preload] || [])
     ]
 
     opts = Keyword.merge(defaults, opts)
-    page = Indexed.paginate(state.managed.index, :posts, opts)
+    page = Indexed.paginate(state.index, :posts, opts)
 
     {:reply, page, state}
   end
@@ -121,15 +118,8 @@ defmodule BlogServer do
   @impl GenServer
   def handle_info({Blog, [:user, :update], new} = msg, state) do
     IO.inspect(new, label: "UsER")
-    maybe_send(msg, state)
+    Blog.maybe_send(msg)
     %{} = orig = get(state, :users, new.id)
     {:noreply, manage(state, :users, orig, new)}
   end
-
-  defp maybe_send(msg, %{feedback_pid: pid} = state) when is_pid(pid) do
-    send(pid, msg)
-    state
-  end
-
-  defp maybe_send(_, state), do: state
 end

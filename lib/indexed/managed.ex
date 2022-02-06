@@ -272,7 +272,7 @@ defmodule Indexed.Managed do
   @spec do_start(state, t, [record], [record]) :: state
   defp do_start(state, managed, orig_records, new_records) do
     state = Enum.reduce(new_records, state, &add(&2, managed, &1))
-    Enum.reduce(orig_records, state, &rm(&2, managed, &1))
+    Enum.reduce(orig_records, state, &rm(&2, managed, &1.id))
   end
 
   # Add a record accoding to its managed config:
@@ -298,6 +298,7 @@ defmodule Indexed.Managed do
   # - If tracked, also update tmp tracking data.
   @spec rm(state, t, id) :: state
   defp rm(state, %{name: name, tracked: false}, id) do
+    log("RM not tracked: #{name}: #{id}")
     drop(state, name, id)
     state
   end
@@ -305,6 +306,7 @@ defmodule Indexed.Managed do
   defp rm(state, %{name: name}, id) do
     cur = tracking_tmp(state, name, id)
     cur > 0 || raise "Couldn't remove reference for #{name}: already at 0."
+    log("RM tracked: #{name}: #{id}: new tracking #{cur - 1}")
     put_in(state, [Access.key(:tmp), :tracking, name, id], cur - 1)
   end
 
@@ -358,6 +360,9 @@ defmodule Indexed.Managed do
     %{id_key: id_key} = get_managed(state.module, entity_name)
     %{module: assoc_mod} = get_managed(state.module, assoc_entity_name)
 
+    log({entity_name, path_entry, assoc_mod, fkey}, label: "MANY add")
+    log(records, label: "records")
+
     {assoc_records, ids} =
       Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_ids} ->
         case Map.fetch!(record, path_entry) do
@@ -386,8 +391,9 @@ defmodule Indexed.Managed do
        ) do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
 
-    log({entity_name, path_entry, assoc_managed.name, fkey}, label: "ONE rm")
+    log({entity_name, path_entry, assoc_managed.name, fkey, sub_path}, label: "ONE rm")
     log(records, label: "records")
+    # ONE rm: {:comments, :author, :users, :author_id}
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
@@ -411,13 +417,16 @@ defmodule Indexed.Managed do
     %{id_key: id_key} = get_managed(state.module, entity_name)
     %{name: assoc_name} = get_managed(state.module, assoc_entity_name)
 
+    log({entity_name, "x", assoc_name, fkey}, label: "MANY rm")
+    log(records, label: "records")
+
     assoc_records =
       Enum.reduce(records, [], fn record, acc ->
         id = id(id_key, record)
         acc ++ get_records(state, assoc_name, {fkey, id})
       end)
 
-    Enum.each(assoc_records, &drop(state, assoc_entity_name, &1))
+    Enum.each(assoc_records, &drop(state, assoc_entity_name, &1.id))
 
     do_manage_path(state, assoc_entity_name, :add, assoc_records, sub_path)
   end
@@ -475,11 +484,13 @@ defmodule Indexed.Managed do
     new = to_list.(new)
     orig = to_list.(orig)
 
+    path = normalize_preload(path)
+
     state
     |> State.init_tmp()
     |> do_start(managed, orig, new)
-    |> do_manage_path(name, :add, new, normalize_preload(path))
-    |> do_manage_path(name, :rm, orig, normalize_preload(path))
+    |> do_manage_path(name, :add, new, path)
+    |> do_manage_path(name, :rm, orig, path)
     |> do_finish()
   end
 
@@ -733,27 +744,29 @@ defmodule Indexed.Managed do
   def preload_fn(_, _), do: nil
 
   @doc "Preload associations recursively."
-  @spec preload(map | [map] | nil, state, atom | list) :: [map] | map | nil
+  @spec preload(map | [map] | nil, state_or_wrapped, atom | list) :: [map] | map | nil
+  def preload(record_or_list, %{managed: managed}, preload) do
+    Managed.preload(record_or_list, managed, preload)
+  end
+
   def preload(record_or_list, state, preload) do
     resolve(record_or_list, state, preload: preload)
   end
 
-  @doc """
-  Prepare some data.
-
-  ## Options
-
-  * `:preload` - Which data to preload. eg. `[:roles, markets: :locations]`
-  """
+  # Prepare some data.
+  #
+  # ## Options
+  #
+  # * `:preload` - Which data to preload. eg. `[:author, comments: :author]`
   @spec resolve(map | [map] | nil, state, keyword | map) :: [map] | map | nil
-  def resolve(record_or_list, state, opts \\ [])
-  def resolve(nil, _, _), do: nil
+  defp resolve(record_or_list, state, opts)
+  defp resolve(nil, _, _), do: nil
 
-  def resolve(record_or_list, state, opts) when is_list(record_or_list) do
+  defp resolve(record_or_list, state, opts) when is_list(record_or_list) do
     Enum.map(record_or_list, &resolve(&1, state, opts))
   end
 
-  def resolve(record_or_list, %{module: mod} = state, opts) do
+  defp resolve(record_or_list, %{module: mod} = state, opts) do
     record = record_or_list
 
     preload = fn

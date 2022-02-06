@@ -41,7 +41,13 @@ defmodule Indexed.ManagedTest do
       ]
     })
 
-    [bs_pid: start_supervised!(BlogServer.child_spec(feedback_pid: self()))]
+    bs = start_supervised!(BlogServer.child_spec(feedback_pid: self()))
+
+    assert_receive [:subscribe, "user-1"]
+    assert_receive [:subscribe, "user-2"]
+    assert_receive [:subscribe, "user-3"]
+
+    [bs_pid: bs]
   end
 
   test "basic", %{bs_pid: bs_pid} do
@@ -54,6 +60,8 @@ defmodule Indexed.ManagedTest do
 
     # :sys.get_state(bs_pid) |> IO.inspect(label: "stat")
     # BlogServer.run(& &1.get_records.(:users)) |> IO.inspect(label: "users")
+
+    preload = [author: :flare_pieces, comments: [author: :flare_pieces]]
 
     assert %{
              entries: [
@@ -75,10 +83,7 @@ defmodule Indexed.ManagedTest do
                  comments: [%{content: "ho"}, %{content: "hi"}]
                }
              ]
-           } =
-             BlogServer.paginate(
-               preload: [author: :flare_pieces, comments: [author: :flare_pieces]]
-             )
+           } = BlogServer.paginate(preload: preload)
 
     #  |> IO.inspect(label: "PAGGA")
 
@@ -86,15 +91,35 @@ defmodule Indexed.ManagedTest do
     #  |> IO.inspect(label: "endstate")
 
     state = fn -> :sys.get_state(bs_pid) end
-    tracking = fn -> state.().managed.tracking end
+    tracking = fn -> state.().tracking end
+    records = fn name -> BlogServer.run(& &1.get_records.(name)) end
 
     assert %{users: %{1 => 4, 2 => 1, 3 => 1}} = tracking.()
 
-    IO.inspect(label: "redeh")
-
     {:ok, _} = Blog.delete_comment(comment_id)
 
+    assert_receive [:unsubscribe, "user-2"]
+
     assert %{users: %{1 => 4, 3 => 1}} = tracking.()
+
+    assert %{
+      entries: [
+        %{
+          content: "My post is the best.",
+          author: %{name: "bob"},
+          comments: [%{content: "woah"}]
+        },
+        %{
+          content: "Hello World",
+          author: %{name: "bob"},
+          comments: [%{content: "ho"}, %{content: "hi"}]
+        }
+      ]
+    } = BlogServer.paginate(preload: preload)
+
+    refute Enum.any?(records.(:flare_pieces), &(&1.name in ~w(hat mitten)))
+    refute Enum.any?(records.(:users), &(&1.name == "jill"))
+    refute Enum.any?(records.(:comments), &(&1.content == "wow"))
 
     # todo - subscription handling on many-type assocs
 
