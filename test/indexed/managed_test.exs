@@ -51,15 +51,16 @@ defmodule Indexed.ManagedTest do
   end
 
   test "basic", %{bs_pid: bs_pid} do
-    # %{id: bob_id} = bob = Blog.get_user("bob")
-    # {:ok, _} = Blog.update_user(bob, %{name: "fred"})
+    %{id: bob_id} = bob = Blog.get_user("bob")
+    {:ok, _} = Blog.update_user(bob, %{name: "fred"})
 
-    # assert_receive {Blog, [:user, :update], %{id: ^bob_id}}
+    assert_receive {Blog, [:user, :update], %{id: ^bob_id}}
 
-    # assert %{name: "fred"} = BlogServer.run(& &1.get.(:users, bob_id))
+    assert %{name: "fred"} = BlogServer.run(& &1.get.(:users, bob_id))
 
     # :sys.get_state(bs_pid) |> IO.inspect(label: "stat")
     # BlogServer.run(& &1.get_records.(:users)) |> IO.inspect(label: "users")
+    raise "done"
 
     preload = [author: :flare_pieces, comments: [author: :flare_pieces]]
 
@@ -85,37 +86,22 @@ defmodule Indexed.ManagedTest do
              ]
            } = BlogServer.paginate(preload: preload)
 
-    #  |> IO.inspect(label: "PAGGA")
-
-    #  :sys.get_state(bs_pid)
-    #  |> IO.inspect(label: "endstate")
-
     state = fn -> :sys.get_state(bs_pid) end
-    tracking = fn -> state.().tracking end
+    tracking = fn name -> Map.fetch!(state.().tracking, name) end
     records = fn name -> BlogServer.run(& &1.get_records.(name)) end
 
-    assert %{users: %{1 => 4, 2 => 1, 3 => 1}} = tracking.()
+    assert %{1 => 4, 2 => 1, 3 => 1} = tracking.(:users)
 
     {:ok, _} = Blog.delete_comment(comment_id)
 
     assert_receive [:unsubscribe, "user-2"]
+    refute_receive _
 
-    assert %{users: %{1 => 4, 3 => 1}} = tracking.()
+    assert %{1 => 4, 3 => 1} == tracking.(:users)
 
     assert %{
-      entries: [
-        %{
-          content: "My post is the best.",
-          author: %{name: "bob"},
-          comments: [%{content: "woah"}]
-        },
-        %{
-          content: "Hello World",
-          author: %{name: "bob"},
-          comments: [%{content: "ho"}, %{content: "hi"}]
-        }
-      ]
-    } = BlogServer.paginate(preload: preload)
+             entries: [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}]
+           } = BlogServer.paginate(preload: preload)
 
     refute Enum.any?(records.(:flare_pieces), &(&1.name in ~w(hat mitten)))
     refute Enum.any?(records.(:users), &(&1.name == "jill"))
