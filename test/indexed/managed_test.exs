@@ -33,6 +33,11 @@ defmodule Indexed.ManagedTest do
     assert_receive [:subscribe, "user-2"]
     assert_receive [:subscribe, "user-3"]
 
+    # assert_receive [:subscribe, "flare-1"]
+    # assert_receive [:subscribe, "flare-2"]
+    # assert_receive [:subscribe, "flare-3"]
+    # assert_receive [:subscribe, "flare-4"]
+
     [bs_pid: bs]
   end
 
@@ -44,10 +49,8 @@ defmodule Indexed.ManagedTest do
     paginate = fn -> BlogServer.paginate(preload: preload) end
     entries = fn -> paginate.().entries end
 
-    %{id: bob_id} = bob = Blog.get_user("bob")
+    bob = Blog.get_user("bob")
     {:ok, _} = Blog.update_user(bob, %{name: "fred"})
-
-    assert_receive {:got, {Blog, [:user, :update], %{id: ^bob_id}}}
 
     assert [
              %{
@@ -74,6 +77,8 @@ defmodule Indexed.ManagedTest do
     {:ok, _} = Blog.delete_comment(comment_id)
 
     assert_receive [:unsubscribe, "user-2"]
+    # assert_receive [:unsubscribe, "flare-2"]
+    # assert_receive [:unsubscribe, "flare-3"]
 
     assert %{1 => 4, 3 => 1} == tracking.(:users)
 

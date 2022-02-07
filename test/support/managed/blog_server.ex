@@ -1,4 +1,5 @@
 defmodule BlogServer do
+  @moduledoc false
   use GenServer
   use Indexed.Managed, repo: Indexed.Test.Repo
   alias Indexed.Test.Repo
@@ -116,9 +117,13 @@ defmodule BlogServer do
   end
 
   @impl GenServer
-  def handle_info({Blog, [:user, :update], new} = msg, state) do
-    Blog.maybe_send({:got, msg})
+  def handle_info({Blog, [:user, :update], new}, state) do
     %{} = orig = get(state, :users, new.id)
     {:noreply, manage(state, :users, orig, new)}
+  end
+
+  def handle_info({Blog, [:flare, :update], new}, state) do
+    %{} = orig = get(state, :flare_pieces, new.id)
+    {:noreply, manage(state, :flare_pieces, orig, new)}
   end
 end

@@ -56,6 +56,10 @@ defmodule Blog do
     %User{} |> User.changeset(params) |> Repo.insert()
   end
 
+  def update_flare(flare, params) do
+    flare |> FlarePiece.changeset(params) |> Repo.update() |> broadcast([:flare, :update])
+  end
+
   def update_user(user, params) do
     user |> User.changeset(params) |> Repo.update() |> broadcast([:user, :update])
   end
