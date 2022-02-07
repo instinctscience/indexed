@@ -32,6 +32,12 @@ defmodule Blog do
     result
   end
 
+  def broadcast({:ok, %FlarePiece{user_id: id} = flare} = result, event) do
+    full_topic = user_subtopic(id)
+    Phoenix.PubSub.broadcast(@pubsub, full_topic, {@context, event, flare})
+    result
+  end
+
   def broadcast(result, _, _, _), do: result
 
   def all_posts, do: Repo.all(Post)
@@ -57,7 +63,7 @@ defmodule Blog do
   end
 
   def update_flare(flare, params) do
-    flare |> FlarePiece.changeset(params) |> Repo.update() |> broadcast([:flare, :update])
+    flare |> FlarePiece.changeset(params) |> Repo.update() |> broadcast([:user, :update])
   end
 
   def update_user(user, params) do

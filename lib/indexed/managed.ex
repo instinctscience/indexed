@@ -254,10 +254,12 @@ defmodule Indexed.Managed do
         update_in(st, [tk, name], &Map.delete(&1, id))
 
       st, name, id, _orig_c, new_c when new_c > 0 ->
+        log("hi")
         put(st, name, get_tmp_record.(name, id))
         put_tracking.(st, name, id, new_c)
 
       st, name, id, _, new_c ->
+        log("ho")
         put_tracking.(st, name, id, new_c)
     end
 
@@ -277,13 +279,13 @@ defmodule Indexed.Managed do
   # - If tracked, also update tmp tracking data.
   @spec add(state, t, record) :: state
   defp add(state, %{name: name, tracked: false}, record) do
-    log("ADD not tracked: #{name}: #{record.id}")
+    log("ADD not tracked: #{name}: id #{record.id}")
     put(state, name, drop_associations(record))
     state
   end
 
   defp add(state, %{id_key: id_key, name: name}, record) do
-    log("ADD tracked: #{name}: #{record.id}")
+    log("ADD tracked: #{name}: id #{record.id}")
     id = id(id_key, record)
     cur = tracking_tmp(state, name, id)
     tmp = Access.key(:tmp)
@@ -298,14 +300,14 @@ defmodule Indexed.Managed do
   # - If tracked, also update tmp tracking data.
   @spec rm(state, t, id) :: state
   defp rm(state, %{name: name, tracked: false}, id) do
-    log("RM not tracked: #{name}: #{id}")
+    log("RM not tracked: #{name}: id #{id}")
     drop(state, name, id)
     state
   end
 
   defp rm(state, %{name: name}, id) do
     cur = tracking_tmp(state, name, id)
-    log("RM tracked: #{name}: #{id}: new tracking #{cur - 1}")
+    log("RM tracked: #{name}: id #{id}: new tracking #{cur - 1}")
     cur > 0 || raise "Couldn't remove reference for #{name}: already at 0."
 
     put_in(state, [Access.key(:tmp), :tracking, name, id], cur - 1)
@@ -463,7 +465,13 @@ defmodule Indexed.Managed do
   If `state` is a map, wrapping the managed state under a `:managed` key, it
   will be used as appropriate and returned re-wrapped.
   """
-  @spec manage(state_or_wrapped, managed_or_name, record_or_list, record_or_list, path) ::
+  @spec manage(
+          state_or_wrapped,
+          managed_or_name,
+          :insert | :update | record_or_list,
+          record_or_list,
+          path
+        ) ::
           state_or_wrapped
   def manage(state, mon, orig, new, path \\ [])
 
@@ -487,18 +495,25 @@ defmodule Indexed.Managed do
         name -> get_managed(state, name)
       end
 
+    orig =
+      case orig do
+        :insert -> nil
+        :update -> %{} = get(state, name, new.id)
+        og -> og
+      end
+
     path = normalize_preload(path)
     new_records = to_list.(new)
     orig_records = to_list.(orig)
     # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
 
     state = State.init_tmp(state)
-    state = Enum.reduce(new_records, state, &add(&2, managed, &1))
     state = Enum.reduce(orig_records, state, &rm(&2, managed, &1.id))
+    state = Enum.reduce(new_records, state, &add(&2, managed, &1))
 
     state
-    |> do_manage_path(name, :add, new_records, path)
     |> do_manage_path(name, :rm, orig_records, path)
+    |> do_manage_path(name, :add, new_records, path)
     |> do_manage_finish()
   end
 
@@ -656,9 +671,9 @@ defmodule Indexed.Managed do
   end
 
   @doc "Invoke `Indexed.get_records/4` with a wrapped state for convenience."
-  @spec get_records(state_or_wrapped, atom, Indexed.prefilter(), order_hint | nil) ::
+  @spec get_records(state_or_wrapped, atom, Indexed.prefilter() | nil, order_hint | nil) ::
           [record] | nil
-  def get_records(state, name, prefilter, order_hint \\ nil)
+  def get_records(state, name, prefilter \\ nil, order_hint \\ nil)
 
   def get_records(%{managed: managed_state}, name, prefilter, order_hint) do
     get_records(managed_state, name, prefilter, order_hint)

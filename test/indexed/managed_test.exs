@@ -33,11 +33,6 @@ defmodule Indexed.ManagedTest do
     assert_receive [:subscribe, "user-2"]
     assert_receive [:subscribe, "user-3"]
 
-    # assert_receive [:subscribe, "flare-1"]
-    # assert_receive [:subscribe, "flare-2"]
-    # assert_receive [:subscribe, "flare-3"]
-    # assert_receive [:subscribe, "flare-4"]
-
     [bs_pid: bs]
   end
 
@@ -45,6 +40,7 @@ defmodule Indexed.ManagedTest do
     preload = [author: :flare_pieces, comments: [author: :flare_pieces]]
     state = fn -> :sys.get_state(bs_pid) end
     tracking = fn name -> Map.fetch!(state.().tracking, name) end
+    record = fn name, id, pl -> BlogServer.run(& &1.get.(name, id, pl)) end
     records = fn name -> BlogServer.run(& &1.get_records.(name)) end
     paginate = fn -> BlogServer.paginate(preload: preload) end
     entries = fn -> paginate.().entries end
@@ -55,9 +51,12 @@ defmodule Indexed.ManagedTest do
     assert [
              %{
                content: "My post is the best.",
-               author: %{name: "fred", flare_pieces: [%{name: "pin"}]},
+               author: %{name: "fred", flare_pieces: [%{id: pin_id, name: "pin"}]} = bob,
                comments: [
-                 %{content: "woah", author: %{name: "lee", flare_pieces: [%{name: "wig"}]}},
+                 %{
+                   content: "woah",
+                   author: %{id: lee_id, name: "lee", flare_pieces: [%{name: "wig"} = flare]}
+                 },
                  %{
                    id: comment_id,
                    content: "wow",
@@ -77,8 +76,6 @@ defmodule Indexed.ManagedTest do
     {:ok, _} = Blog.delete_comment(comment_id)
 
     assert_receive [:unsubscribe, "user-2"]
-    # assert_receive [:unsubscribe, "flare-2"]
-    # assert_receive [:unsubscribe, "flare-3"]
 
     assert %{1 => 4, 3 => 1} == tracking.(:users)
 
@@ -88,8 +85,18 @@ defmodule Indexed.ManagedTest do
     refute Enum.any?(records.(:users), &(&1.name == "jill"))
     refute Enum.any?(records.(:comments), &(&1.content == "wow"))
 
-    # todo - subscription handling on many-type assocs
+    {:ok, _} = Blog.update_flare(flare, %{name: "tupay"})
 
-    # {:ok, _} = Blog.update_user(Blog.get_user("jill"), %{name: "jessica"})
+    assert %{name: "lee", flare_pieces: [%{name: "tupay"}]} =
+             record.(:users, lee_id, :flare_pieces)
+
+    {:ok, _} =
+      Blog.update_user(bob, %{
+        name: "bob",
+        flare_pieces: [%{id: pin_id, name: "sticker"}, %{name: "cap"}]
+      })
+
+    assert %{name: "bob", flare_pieces: [%{name: "cap"}, %{name: "sticker"}]} =
+             record.(:users, bob.id, :flare_pieces)
   end
 end

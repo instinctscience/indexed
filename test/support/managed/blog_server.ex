@@ -32,9 +32,7 @@ defmodule BlogServer do
   managed :flare_pieces, FlarePiece,
     fields: [:name],
     # get_fn: &Blog.get_flare_piece/1,
-    prefilters: [:user_id],
-    subscribe: &Blog.subscribe_to_flare_piece/1,
-    unsubscribe: &Blog.unsubscribe_from_flare_piece/1
+    prefilters: [:user_id]
 
   def call(msg), do: GenServer.call(__MODULE__, msg)
   def run(fun), do: call({:run, fun})
@@ -96,7 +94,7 @@ defmodule BlogServer do
 
   def handle_call({:run, fun}, _from, state) do
     tools = %{
-      get: &get(state, &1, &2),
+      get: &(state |> get(&1, &2) |> preload(state, &3)),
       get_records: &get_records(state, &1, nil),
       preload: &preload(&1, state, &2)
     }
@@ -117,13 +115,11 @@ defmodule BlogServer do
   end
 
   @impl GenServer
-  def handle_info({Blog, [:user, :update], new}, state) do
-    %{} = orig = get(state, :users, new.id)
-    {:noreply, manage(state, :users, orig, new)}
+  def handle_info({Blog, [:user, :update], %User{} = new}, state) do
+    {:noreply, manage(state, :users, :update, new, :flare_pieces)}
   end
 
-  def handle_info({Blog, [:flare, :update], new}, state) do
-    %{} = orig = get(state, :flare_pieces, new.id)
-    {:noreply, manage(state, :flare_pieces, orig, new)}
+  def handle_info({Blog, [:user, :update], %FlarePiece{} = new}, state) do
+    {:noreply, manage(state, :flare_pieces, :update, new)}
   end
 end
