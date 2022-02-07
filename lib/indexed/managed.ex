@@ -156,7 +156,6 @@ defmodule Indexed.Managed do
     :name,
     :prefilters,
     :setup,
-    :top,
     :tracked,
     :subscribe,
     :unsubscribe
@@ -175,8 +174,6 @@ defmodule Indexed.Managed do
   * `:setup` - Function which takes and returns the record when `manage/4`
     begins. Useful for custom preparation steps.
   * `:subscribe` - 1-arity function which subscribes to changes by id.
-  * `:top` - If true, records of this type will not be tracked.
-    As a result, they will never be auto-removed.
   * `:unsubscribe` - 1-arity function which unsubscribes to changes by id.
   """
   @type t :: %Managed{
@@ -190,7 +187,6 @@ defmodule Indexed.Managed do
           prefilters: [atom | keyword] | nil,
           setup: (map -> map) | nil,
           subscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil,
-          top: boolean,
           tracked: boolean,
           unsubscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil
         }
@@ -531,7 +527,6 @@ defmodule Indexed.Managed do
         prefilters: unquote(opts[:prefilters]),
         setup: unquote(opts[:setup]),
         subscribe: unquote(opts[:subscribe]),
-        top: unquote(!!opts[:top]),
         tracked: false,
         unsubscribe: unquote(opts[:unsubscribe])
       }

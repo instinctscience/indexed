@@ -6,7 +6,6 @@ defmodule BlogServer do
 
   managed :posts, Post,
     fields: [:inserted_at],
-    top: true,
     children: [
       author: {:one, :users, :author_id},
       comments: {:many, :comments, :post_id}
@@ -16,13 +15,12 @@ defmodule BlogServer do
     fields: [:inserted_at],
     prefilters: [:post_id],
     children: [
-      author: {:one, :users, :author_id}
-      # post: {:one, :posts, :post_id}
+      author: {:one, :users, :author_id},
+      post: {:one, :posts, :post_id}
     ]
 
   managed :users, User,
     fields: [:name],
-    # get_fn: &Blog.get_user/1,
     subscribe: &Blog.subscribe_to_user/1,
     unsubscribe: &Blog.unsubscribe_from_user/1,
     children: [
@@ -31,7 +29,6 @@ defmodule BlogServer do
 
   managed :flare_pieces, FlarePiece,
     fields: [:name],
-    # get_fn: &Blog.get_flare_piece/1,
     prefilters: [:user_id]
 
   def call(msg), do: GenServer.call(__MODULE__, msg)

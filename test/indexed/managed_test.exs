@@ -67,7 +67,7 @@ defmodule Indexed.ManagedTest do
              %{
                content: "Hello World",
                author: %{name: "fred"},
-               comments: [%{content: "ho"}, %{content: "hi"}]
+               comments: [%{id: comment2_id, content: "ho"}, %{content: "hi"}]
              }
            ] = entries.()
 
@@ -98,5 +98,8 @@ defmodule Indexed.ManagedTest do
 
     assert %{name: "bob", flare_pieces: [%{name: "cap"}, %{name: "sticker"}]} =
              record.(:users, bob.id, :flare_pieces)
+
+    assert %{content: "ho", author: %{name: "bob"}, post: %{content: "Hello World"}} =
+             record.(:comments, comment2_id, [:author, :post])
   end
 end
