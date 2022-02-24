@@ -67,11 +67,7 @@ defmodule Indexed do
   @doc "Get an index data structure."
   @spec get_index(t, atom, prefilter, order_hint | nil) :: list | map | nil
   def get_index(index, entity_name, prefilter, order_hint) when is_atom(entity_name) do
-    k = &Access.key(&1)
-
-    order_hint =
-      order_hint ||
-        index |> get_in([k.(:entities), entity_name, k.(:fields)]) |> hd() |> elem(0)
+    order_hint = order_hint || default_order_hint(index, entity_name)
 
     # index_key = index_key(entity_name, prefilter, order_hint)
 
@@ -174,4 +170,14 @@ defmodule Indexed do
   defp prefilter_id({k, v}), do: "[#{k}=#{v}]"
   defp prefilter_id(fp) when is_binary(fp), do: "<#{fp}>"
   defp prefilter_id(_), do: "[]"
+
+  @doc """
+  Get the name of the first indexed field for an entity.
+  Good order_hint default.
+  """
+  @spec default_order_hint(t, atom) :: atom
+  def default_order_hint(index, entity_name) do
+    k = &Access.key(&1)
+    index |> get_in([k.(:entities), entity_name, k.(:fields)]) |> hd() |> elem(0)
+  end
 end

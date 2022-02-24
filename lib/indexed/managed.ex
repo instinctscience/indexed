@@ -15,7 +15,7 @@ defmodule Indexed.Managed do
         use Indexed.Managed, repo: MyApp.Repo
 
         managed :cars, MyApp.Car,
-          children: [passengers: {:many, :people, :car_id, :name}]
+          children: [passengers: {:many, :people}]
 
         managed :people, MyApp.Person,
           get_fn: &MyApp.get_person/1,
@@ -40,6 +40,17 @@ defmodule Indexed.Managed do
     begins. Useful for custom preparation steps.
   * `:subscribe` and `:unsubscribe` - Functions which take a record's ID and
     manage the subscription. These must both be declared or neither.
+
+  ## Tips
+
+  If you want to `import Ecto.Query`, you'll find that its `preload/3` conflicts
+  with Managed. Since Managed will use the repo as a fallback, you can exclude
+  it this way.
+
+      defmodule MyModule do
+        use Indexed.Managed
+        import Ecto.Query, except: [preload: 2, preload: 3]
+      end
   """
   import Ecto.Query
   import Indexed.Helpers, only: [normalize_preload: 1]
@@ -104,6 +115,7 @@ defmodule Indexed.Managed do
 
   * `{:one, entity_name, id_key}` - Preload function should get a record of
     `entity_name` with id matching the id found under `id_key` of the record.
+  * `{:many, entity_name}` - Uses Ecto.Schema to... IO.inspect! Otherwise, works the same as the next one.
   * `{:many, entity_name, pf_key}` - Uses an order_hint default of the first
     listed field, ascending. Otherwise, works the same as the next one.
   * `{:many, entity_name, pf_key, order_hint}` - Preload function should
@@ -115,6 +127,7 @@ defmodule Indexed.Managed do
   """
   @type assoc_spec ::
           {:one, entity_name :: atom, id_key :: atom}
+          | {:many, entity_name :: atom}
           | {:many, entity_name :: atom, pf_key :: atom | nil}
           | {:many, entity_name :: atom, pf_key :: atom | nil, order_hint}
           | {:repo, assoc_field :: atom, managed :: t}
@@ -149,6 +162,7 @@ defmodule Indexed.Managed do
   defstruct [
     :children,
     :children_getters,
+    :default_path,
     :fields,
     :id_key,
     :get_fn,
@@ -179,6 +193,7 @@ defmodule Indexed.Managed do
   @type t :: %Managed{
           children: %{atom => assoc_spec},
           children_getters: %{atom => {module, atom}},
+          default_path: path,
           fields: [atom | Indexed.Entity.field()],
           id_key: id_key,
           get_fn: (any -> map) | nil,
@@ -199,18 +214,66 @@ defmodule Indexed.Managed do
       @managed_repo unquote(repo)
       Module.register_attribute(__MODULE__, :managed_setup, accumulate: true)
 
+      @doc "Create a Managed state struct, without index being initialized."
+      @spec init_managed_state :: Managed.State.t()
+      def init_managed_state do
+        State.init(__MODULE__, unquote(repo))
+      end
+
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
-      @spec warm(atom, Managed.data_opt(), Managed.path()) :: Managed.State.t()
-      def warm(entity_name, data_opt, path) do
-        state = State.init(__MODULE__, unquote(repo))
-        warm(state, entity_name, data_opt, path)
+      @spec warm(Managed.State.t() | nil, atom, Managed.data_opt(), Managed.path() | nil) ::
+              Managed.State.t()
+      def warm(entity_name, data_opt) do
+        warm(entity_name, data_opt, nil)
+      end
+
+      @doc """
+      Invoke this function with `state, entity_name, data_opt` or
+      `entity_name, data_opt, path`.
+      """
+      @spec warm(
+              Manged.State.t() | atom,
+              atom | Managed.data_opt(),
+              Managed.data_opt() | Managed.path()
+            ) ::
+              Managed.State.t()
+      def warm(%{} = a, b, c) do
+        warm(a, b, c, nil)
+      end
+
+      def warm(a, b, c) do
+        warm(init_managed_state(), a, b, c)
+      end
+
+      @doc "Returns a freshly initialized state for `Indexed.Managed`."
+      @spec warm(Manged.State.t(), atom, Managed.data_opt(), Managed.path()) :: Managed.State.t()
+      def warm(state, entity_name, data_opt, path) do
+        do_warm(state, entity_name, data_opt, path)
+      end
+
+      @doc "Warm the index inside the state (or wrapped state)."
+      @spec warm_index(Managed.state_or_wrapped() | nil, keyword) :: Managed.state_or_wrapped()
+      def warm_index(state \\ nil, args)
+
+      def warm_index(%{managed: managed}, args) do
+        %{managed: warm_index(managed, args)}
+      end
+
+      def warm_index(nil, args) do
+        warm_index(init_managed_state(), args)
+      end
+
+      def warm_index(state, args) do
+        %{state | index: Indexed.warm(args)}
       end
     end
   end
 
   @doc "Loads data into index, populating `:tracked` and subscribing as needed."
-  @spec warm(state, atom, data_opt, path) :: state
-  def warm(%{module: mod} = state, entity_name, data_opt, path) do
+  @spec do_warm(state, atom, data_opt | record, path | nil) :: state
+  def do_warm(state, entity_name, data, path \\ nil)
+
+  def do_warm(%{index: nil, module: mod} = state, entity_name, data, path) do
     warm_args =
       Enum.reduce(mod.__managed__(), [], fn entity, acc ->
         managed = get_managed(mod, entity)
@@ -222,11 +285,16 @@ defmodule Indexed.Managed do
         )
       end)
 
+    state = %{state | index: Indexed.warm(warm_args)}
+    do_warm(state, entity_name, data, path)
+  end
+
+  def do_warm(%{module: mod} = state, entity_name, data, path) do
     # TODO - could probably make use of data_opt properly
     managed = get_managed(mod, entity_name)
+    data_opt = if is_map(data), do: [data], else: data
     {_, _, records} = Warm.resolve_data_opt(data_opt, entity_name, managed.fields)
 
-    state = %{state | index: Indexed.warm(warm_args)}
     manage(state, entity_name, [], records, path)
   end
 
@@ -275,13 +343,13 @@ defmodule Indexed.Managed do
   # - If tracked, also update tmp tracking data.
   @spec add(state, t, record) :: state
   defp add(state, %{name: name, tracked: false}, record) do
-    log("ADD not tracked: #{name}: id #{record.id}")
+    log("ADD not tracked: #{name}: #{inspect(record)}")
     put(state, name, drop_associations(record))
     state
   end
 
   defp add(state, %{id_key: id_key, name: name}, record) do
-    log("ADD tracked: #{name}: id #{record.id}")
+    log("ADD tracked: #{name}: #{inspect(record)}")
     id = id(id_key, record)
     cur = tracking_tmp(state, name, id)
     tmp = Access.key(:tmp)
@@ -317,6 +385,11 @@ defmodule Indexed.Managed do
       %{children: children} = get_managed(acc.module, entity_name)
       spec = Map.fetch!(children, path_entry)
 
+      # # We don't need the order_hint.
+      # spec =
+      #   with {:many, a, b, _c} <- Map.fetch!(children, path_entry),
+      #        do: {:many, a, b}
+
       do_manage_assoc(acc, entity_name, path_entry, spec, action, records, sub_path)
     end)
   end
@@ -324,6 +397,8 @@ defmodule Indexed.Managed do
   # Manage a single associations across a set of records.
   # Then recursively handle associations according to sub_path therein.
   @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword) :: state
+  # *** ONE ADD - these records have a `belongs_to :assoc_name` association.
+  # {:many, assoc_name, fkey, _} = expand_tuple(spec, 4)
   defp do_manage_assoc(
          state,
          entity_name,
@@ -348,17 +423,12 @@ defmodule Indexed.Managed do
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
 
-  defp do_manage_assoc(
-         state,
-         entity_name,
-         path_entry,
-         {:many, assoc_entity_name, fkey},
-         :add,
-         records,
-         sub_path
-       ) do
-    %{id_key: id_key} = get_managed(state.module, entity_name)
-    %{module: assoc_mod} = get_managed(state.module, assoc_entity_name)
+  # *** MANY ADD - these records have a `has_many :assoc_name` association.
+  defp do_manage_assoc(state, entity_name, path_entry, spec, :add, records, sub_path)
+       when :many == elem(spec, 0) do
+    {:many, assoc_name, fkey, _} = normalize_many_spec(spec)
+    %{id_key: id_key, module: entity_mod} = get_managed(state.module, entity_name)
+    %{module: assoc_mod} = get_managed(state.module, assoc_name)
 
     log({entity_name, path_entry, assoc_mod, fkey}, label: "MANY add")
     log(records, label: "records")
@@ -371,15 +441,22 @@ defmodule Indexed.Managed do
         end
       end)
 
+    fkey =
+      fkey ||
+        :association
+        |> entity_mod.__schema__(path_entry)
+        |> Map.fetch!(:related_key)
+
     assoc_records =
       assoc_records ++
         state.repo.all(from(x in assoc_mod, where: field(x, ^fkey) in ^ids))
 
-    Enum.each(assoc_records, &put(state, assoc_entity_name, &1))
+    Enum.each(assoc_records, &put(state, assoc_name, &1))
 
-    do_manage_path(state, assoc_entity_name, :add, assoc_records, sub_path)
+    do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
 
+  # *** ONE RM - these records have a `belongs_to :assoc_name` association.
   defp do_manage_assoc(
          state,
          entity_name,
@@ -405,17 +482,12 @@ defmodule Indexed.Managed do
     do_manage_path(state, assoc_name, :rm, assoc_records, sub_path)
   end
 
-  defp do_manage_assoc(
-         state,
-         entity_name,
-         _path_entry,
-         {:many, assoc_entity_name, fkey},
-         :rm,
-         records,
-         sub_path
-       ) do
+  # *** MANY RM - these records have a `has_many :assoc_name` association.
+  defp do_manage_assoc(state, entity_name, _path_entry, spec, :rm, records, sub_path)
+       when :many == elem(spec, 0) do
+    {:many, assoc_name, fkey, _} = normalize_many_spec(spec)
     %{id_key: id_key} = get_managed(state.module, entity_name)
-    %{name: assoc_name} = get_managed(state.module, assoc_entity_name)
+    %{name: assoc_name} = get_managed(state.module, assoc_name)
 
     log({entity_name, "x", assoc_name, fkey}, label: "MANY rm")
     log(records, label: "records")
@@ -426,9 +498,27 @@ defmodule Indexed.Managed do
         acc ++ get_records(state, assoc_name, {fkey, id})
       end)
 
-    Enum.each(assoc_records, &drop(state, assoc_entity_name, &1.id))
+    Enum.each(assoc_records, &drop(state, assoc_name, &1.id))
 
-    do_manage_path(state, assoc_entity_name, :add, assoc_records, sub_path)
+    do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
+  end
+
+  # Many tuple: {:many, entity_name, prefilter_key, order_hint}
+  # Optional: prefilter_key, order_hint
+  defp normalize_many_spec(tup), do: expand_tuple(tup, 4)
+
+  # Pad `tuple` up to `num` with `nil`.
+  @spec expand_tuple(tuple, non_neg_integer) :: tuple
+  defp expand_tuple(tuple, num) do
+    case tuple |> Tuple.to_list() |> length() do
+      len when len >= num ->
+        tuple
+
+      len ->
+        Enum.reduce((len + 1)..num, tuple, fn _, acc ->
+          Tuple.append(acc, nil)
+        end)
+    end
   end
 
   # Get the tracking (number of references) for the given entity and id.
@@ -469,7 +559,7 @@ defmodule Indexed.Managed do
           path
         ) ::
           state_or_wrapped
-  def manage(state, mon, orig, new, path \\ [])
+  def manage(state, mon, orig, new, path \\ nil)
 
   def manage(%{managed: managed_state} = state, mon, orig, new, path) do
     %{state | managed: manage(managed_state, mon, orig, new, path)}
@@ -484,7 +574,7 @@ defmodule Indexed.Managed do
       i -> i
     end
 
-    %{name: name} =
+    %{name: name, default_path: default_path} =
       managed =
       case mon do
         %{} -> mon
@@ -498,7 +588,12 @@ defmodule Indexed.Managed do
         og -> og
       end
 
-    path = normalize_preload(path)
+    path =
+      case path do
+        nil -> default_path
+        p -> normalize_preload(p)
+      end
+
     new_records = to_list.(new)
     orig_records = to_list.(orig)
     # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
@@ -516,9 +611,16 @@ defmodule Indexed.Managed do
   @doc "Add a managed entity."
   defmacro managed(name, module, opts \\ []) do
     quote do
+      default_path =
+        case unquote(opts[:default_path]) do
+          nil -> []
+          path -> normalize_preload(path)
+        end
+
       @managed_setup %Managed{
         children: Map.new(unquote(opts[:children] || [])),
         children_getters: Map.new(unquote(opts[:children_getters] || [])),
+        default_path: default_path,
         fields: unquote(opts[:fields]),
         get_fn: unquote(opts[:get_fn]),
         id_key: unquote(opts[:id_key] || :id),
@@ -625,12 +727,15 @@ defmodule Indexed.Managed do
 
   @doc "Invoke `Indexed.get/3` with a wrapped state for convenience."
   @spec get(state_or_wrapped, atom, id) :: any
-  def get(%{managed: managed_state}, name, id) do
-    get(managed_state, name, id)
+  def get(state, name, id, preload \\ nil)
+
+  def get(%{managed: managed_state}, name, id, preload) do
+    get(managed_state, name, id, preload)
   end
 
-  def get(%{index: index}, name, id) do
-    Indexed.get(index, name, id)
+  def get(%{index: index} = state, name, id, preload) do
+    record = Indexed.get(index, name, id)
+    if preload, do: Managed.preload(record, state, preload), else: record
   end
 
   @doc "Invoke `Indexed.put/3` with a wrapped state for convenience."
@@ -707,7 +812,7 @@ defmodule Indexed.Managed do
     val
   end
 
-  # Get the %Managed{} or raise a nice error.
+  # Get the %Managed{} or raise an error.
   @spec get_managed(state | module, atom) :: t
   defp get_managed(%{module: mod}, name), do: get_managed(mod, name)
 
@@ -735,11 +840,9 @@ defmodule Indexed.Managed do
     end
   end
 
-  def preload_fn({:many, name, pf_key}, repo) do
-    preload_fn({:many, name, pf_key, nil}, repo)
-  end
+  def preload_fn(tuple, _repo) when :many == elem(tuple, 0) do
+    {:many, name, pf_key, order_hint} = normalize_many_spec(tuple)
 
-  def preload_fn({:many, name, pf_key, order_hint}, _repo) do
     fn record, state ->
       pf = if pf_key, do: {pf_key, record.id}, else: nil
       Indexed.get_records(state.index, name, pf, order_hint) || []
