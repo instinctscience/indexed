@@ -228,44 +228,43 @@ defmodule Indexed.Managed do
       end
 
       @doc """
-      Invoke this function with `state, entity_name, data_opt` or
-      `entity_name, data_opt, path`.
+      Invoke this function with (`state, entity_name, data_opt`) or
+      (`entity_name, data_opt, path`).
       """
       @spec warm(
-              Manged.State.t() | atom,
+              Managed.state_or_wrapped() | atom,
               atom | Managed.data_opt(),
               Managed.data_opt() | Managed.path()
             ) ::
-              Managed.State.t()
-      def warm(%{} = a, b, c) do
-        warm(a, b, c, nil)
-      end
-
-      def warm(a, b, c) do
-        warm(init_managed_state(), a, b, c)
-      end
+              Managed.state_or_wrapped()
+      def warm(%{} = a, b, c), do: warm(a, b, c, nil)
+      def warm(a, b, c), do: warm(init_managed_state(), a, b, c)
 
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
-      @spec warm(Manged.State.t(), atom, Managed.data_opt(), Managed.path()) :: Managed.State.t()
-      def warm(state, entity_name, data_opt, path) do
-        do_warm(state, entity_name, data_opt, path)
-      end
+      @spec warm(Managed.state_or_wrapped(), atom, Managed.data_opt(), Managed.path()) ::
+              Managed.state_or_wrapped()
+      def warm(%{managed: nil} = state, entity_name, data_opt, path),
+        do: %{state | managed: warm(init_managed_state(), entity_name, data_opt, path)}
+
+      def warm(%{managed: managed} = state, entity_name, data_opt, path),
+        do: %{state | managed: warm(managed, entity_name, data_opt, path)}
+
+      def warm(state, entity_name, data_opt, path),
+        do: do_warm(state, entity_name, data_opt, path)
 
       @doc "Warm the index inside the state (or wrapped state)."
-      @spec warm_index(Managed.state_or_wrapped() | nil, keyword) :: Managed.state_or_wrapped()
+      @spec warm_index(Managed.state_or_wrapped() | nil, keyword) ::
+              Managed.state_or_wrapped()
       def warm_index(state \\ nil, args)
 
-      def warm_index(%{managed: managed}, args) do
-        %{managed: warm_index(managed, args)}
-      end
+      def warm_index(%{managed: managed}, args),
+        do: %{managed: warm_index(managed, args)}
 
-      def warm_index(nil, args) do
-        warm_index(init_managed_state(), args)
-      end
+      def warm_index(nil, args),
+        do: warm_index(init_managed_state(), args)
 
-      def warm_index(state, args) do
-        %{state | index: Indexed.warm(args)}
-      end
+      def warm_index(state, args),
+        do: %{state | index: Indexed.warm(args)}
     end
   end
 
@@ -415,9 +414,14 @@ defmodule Indexed.Managed do
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
-        assoc_id = Map.fetch!(record, fkey)
-        assoc = assoc_from_record(record, path_entry) || state.repo.get(assoc_mod, assoc_id)
-        {add(acc_state, assoc_managed, assoc), [assoc | acc_assoc_records]}
+        case Map.fetch!(record, fkey) do
+          nil ->
+            {acc_state, acc_assoc_records}
+
+          assoc_id ->
+            assoc = assoc_from_record(record, path_entry) || state.repo.get(assoc_mod, assoc_id)
+            {add(acc_state, assoc_managed, assoc), [assoc | acc_assoc_records]}
+        end
       end)
 
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
@@ -474,9 +478,14 @@ defmodule Indexed.Managed do
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
-        assoc_id = Map.fetch!(record, fkey)
-        assoc = get(acc_state, assoc_name, assoc_id)
-        {rm(acc_state, assoc_managed, assoc_id), [assoc | acc_assoc_records]}
+        case Map.fetch!(record, fkey) do
+          nil ->
+            {acc_state, acc_assoc_records}
+
+          assoc_id ->
+            assoc = get(acc_state, assoc_name, assoc_id)
+            {rm(acc_state, assoc_managed, assoc_id), [assoc | acc_assoc_records]}
+        end
       end)
 
     do_manage_path(state, assoc_name, :rm, assoc_records, sub_path)
@@ -682,16 +691,15 @@ defmodule Indexed.Managed do
       Enum.map(list, &if(&1.name == entity, do: %{&1 | tracked: true}, else: &1))
     end
 
-    manageds
-    |> Enum.reduce(manageds, fn %{children: children}, acc ->
-      children
-      |> Enum.reduce(acc, fn
-        {_key, {:one, entity, _fkey}}, acc2 -> set_tracked.(acc2, entity)
-        _, acc2 -> acc2
+    manageds =
+      Enum.reduce(manageds, manageds, fn %{children: children}, acc ->
+        Enum.reduce(children, acc, fn
+          {_key, {:one, entity, _fkey}}, acc2 -> set_tracked.(acc2, entity)
+          _, acc2 -> acc2
+        end) ++ acc
       end)
-      |> Kernel.++(acc)
-    end)
-    |> Enum.uniq()
+
+    Enum.uniq(manageds)
   end
 
   @spec validate_before_compile!(module, module, list) :: :ok
@@ -879,9 +887,13 @@ defmodule Indexed.Managed do
   # ## Options
   #
   # * `:preload` - Which data to preload. eg. `[:author, comments: :author]`
-  @spec resolve(map | [map] | nil, state, keyword | map) :: [map] | map | nil
+  @spec resolve(map | [map] | nil, state_or_wrapped, keyword | map) :: [map] | map | nil
   defp resolve(record_or_list, state, opts)
   defp resolve(nil, _, _), do: nil
+
+  defp resolve(record_or_list, %{managed: state}, opts) do
+    resolve(record_or_list, state, opts)
+  end
 
   defp resolve(record_or_list, state, opts) when is_list(record_or_list) do
     Enum.map(record_or_list, &resolve(&1, state, opts))
