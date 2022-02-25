@@ -30,7 +30,7 @@ defmodule Indexed.Actions.Warm do
   Data option for warming the cache. If data_tuple, the given ordering is
   explicit and we can assume it's correct and skip a sorting routine.
   """
-  @type data_opt :: data_tuple | [Indexed.record()] | nil
+  @type data_opt :: data_tuple | Indexed.record() | [Indexed.record()] | nil
 
   @doc """
   For a set of entities, load data and indexes to ETS for each.
@@ -245,6 +245,8 @@ defmodule Indexed.Actions.Warm do
     do: raise("Bad input data direction for #{entity_name}: #{d}")
 
   def resolve_data_opt(data, _, _) when is_list(data), do: {nil, nil, data}
+
+  def resolve_data_opt(data, _, _), do: {nil, nil, [data]}
 
   @doc """
   Normalize the prefilters option to tuples, adding `nil` prefilter if needed.

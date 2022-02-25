@@ -56,6 +56,7 @@ defmodule Indexed.Managed do
   import Indexed.Helpers, only: [normalize_preload: 1]
   alias Ecto.Association.NotLoaded
   alias Indexed.Actions.Warm
+  alias Indexed.View
   alias __MODULE__
 
   defmodule State do
@@ -221,8 +222,7 @@ defmodule Indexed.Managed do
       end
 
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
-      @spec warm(Managed.State.t() | nil, atom, Managed.data_opt(), Managed.path() | nil) ::
-              Managed.State.t()
+      @spec warm(atom, Managed.data_opt()) :: Managed.State.t()
       def warm(entity_name, data_opt) do
         warm(entity_name, data_opt, nil)
       end
@@ -251,25 +251,11 @@ defmodule Indexed.Managed do
 
       def warm(state, entity_name, data_opt, path),
         do: do_warm(state, entity_name, data_opt, path)
-
-      @doc "Warm the index inside the state (or wrapped state)."
-      @spec warm_index(Managed.state_or_wrapped() | nil, keyword) ::
-              Managed.state_or_wrapped()
-      def warm_index(state \\ nil, args)
-
-      def warm_index(%{managed: managed}, args),
-        do: %{managed: warm_index(managed, args)}
-
-      def warm_index(nil, args),
-        do: warm_index(init_managed_state(), args)
-
-      def warm_index(state, args),
-        do: %{state | index: Indexed.warm(args)}
     end
   end
 
   @doc "Loads data into index, populating `:tracked` and subscribing as needed."
-  @spec do_warm(state, atom, data_opt | record, path | nil) :: state
+  @spec do_warm(state, atom, data_opt, path | nil) :: state
   def do_warm(state, entity_name, data, path \\ nil)
 
   def do_warm(%{index: nil, module: mod} = state, entity_name, data, path) do
@@ -291,8 +277,7 @@ defmodule Indexed.Managed do
   def do_warm(%{module: mod} = state, entity_name, data, path) do
     # TODO - could probably make use of data_opt properly
     managed = get_managed(mod, entity_name)
-    data_opt = if is_map(data), do: [data], else: data
-    {_, _, records} = Warm.resolve_data_opt(data_opt, entity_name, managed.fields)
+    {_, _, records} = Warm.resolve_data_opt(data, entity_name, managed.fields)
 
     manage(state, entity_name, [], records, path)
   end
@@ -789,6 +774,47 @@ defmodule Indexed.Managed do
 
   def get_records(%{index: index}, name, prefilter, order_hint) do
     Indexed.get_records(index, name, prefilter, order_hint)
+  end
+
+  @spec create_view(state_or_wrapped, atom, View.fingerprint(), keyword) ::
+          {:ok, View.t()} | :error
+  def create_view(state, name, fingerprint, opts \\ [])
+
+  def create_view(%{managed: managed_state}, name, fingerprint, opts) do
+    create_view(managed_state, name, fingerprint, opts)
+  end
+
+  def create_view(%{index: index}, name, fingerprint, opts) do
+    Indexed.create_view(index, name, fingerprint, opts)
+  end
+
+  @spec paginate(state_or_wrapped, atom, keyword) :: Paginator.Page.t() | nil
+  def paginate(%{managed: managed_state}, name, params) do
+    paginate(managed_state, name, params)
+  end
+
+  def paginate(%{index: index}, name, params) do
+    Indexed.paginate(index, name, params)
+  end
+
+  @doc "Invoke `Indexed.get_view/4` with a wrapped state for convenience."
+  @spec get_view(state_or_wrapped, atom, View.fingerprint()) :: View.t() | nil
+  def get_view(%{managed: managed_state}, name, fingerprint) do
+    get_view(managed_state, name, fingerprint)
+  end
+
+  def get_view(%{index: index}, name, fingerprint) do
+    Indexed.get_view(index, name, fingerprint)
+  end
+
+  def managed_stat(%{managed: managed_state}) do
+    managed_stat(managed_state)
+  end
+
+  def managed_stat(%{index: index} = state) do
+    Enum.map(index.entities, fn {name, _} ->
+      {name, length(get_index(state, name))}
+    end)
   end
 
   # Invoke :subscribe function for the given entity id if one is defined.
