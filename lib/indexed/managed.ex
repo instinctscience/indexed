@@ -56,58 +56,59 @@ defmodule Indexed.Managed do
   import Indexed.Helpers, only: [normalize_preload: 1]
   alias Ecto.Association.NotLoaded
   alias Indexed.Actions.Warm
+  alias Indexed.Managed.State
   alias Indexed.View
   alias __MODULE__
 
-  defmodule State do
-    @moduledoc "A piece of GenServer state for Managed."
-    alias Indexed.Managed
-    alias __MODULE__
-    defstruct [:index, :module, :repo, :tmp, :tracking]
+  defstruct [
+    :children,
+    :children_getters,
+    :default_path,
+    :fields,
+    :id_key,
+    :get_fn,
+    :module,
+    :name,
+    :prefilters,
+    :setup,
+    :tracked,
+    :subscribe,
+    :unsubscribe
+  ]
 
-    @typedoc """
-    Data structure used to hold temporary data while running an operation.
-
-    * `:records` - Outer map is keyed by entity name. Inner map is keyed by
-      record id. Values are the records themselves. These are new records which
-      may be committed to ETS at the end of the operation.
-    * `:tracking` - For record ids relevant to the operation, initial values are
-      copied from State and manipulated as needed within this structure.
-    """
-    @type tmp :: %{
-            records: %{atom => %{Indexed.id() => Indexed.record()}},
-            tracking: Managed.tracking()
-          }
-
-    @typedoc """
-    """
-    @type t :: %State{
-            index: Indexed.t() | nil,
-            module: module,
-            repo: module,
-            tmp: tmp | nil,
-            tracking: Managed.tracking()
-          }
-
-    @doc "Returns a freshly initialized state for `Indexed.Managed`."
-    @spec init(module, module) :: t
-    def init(mod, repo) do
-      %State{module: mod, repo: repo, tracking: init_tracking(mod)}
-    end
-
-    @doc "Returns a freshly initialized state for `Indexed.Managed`."
-    @spec init_tmp(t) :: t
-    def init_tmp(%{module: mod} = state) do
-      records = Map.new(mod.__tracked__(), &{&1, %{}})
-      %{state | tmp: %{records: records, tracking: init_tracking(mod)}}
-    end
-
-    @spec init_tracking(module) :: map
-    defp init_tracking(mod), do: Map.new(mod.__tracked__(), &{&1, %{}})
-  end
+  @typedoc """
+  * `:children` - Map with assoc field name keys `t:assoc_spec/0` values.
+    When this entity is managed, all children will also be managed and so on,
+    recursively.
+  * `:id_key` - Field name atom which carries the id to index with or a
+    function which accepts a record and returns the id to use. Default `:id`.
+  * `:get_fn` - Function which takes a record ID and returns the record from
+    the outside. Invoked by `manage/4` when a tracked record is needed.
+  * `:module` - The struct module which will be used for the records.
+  * `:name` - Atom name of the managed entity.
+  * `:setup` - Function which takes and returns the record when `manage/4`
+    begins. Useful for custom preparation steps.
+  * `:subscribe` - 1-arity function which subscribes to changes by id.
+  * `:unsubscribe` - 1-arity function which unsubscribes to changes by id.
+  """
+  @type t :: %Managed{
+          children: %{atom => assoc_spec},
+          children_getters: %{atom => {module, atom}},
+          default_path: path,
+          fields: [atom | Indexed.Entity.field()],
+          id_key: id_key,
+          get_fn: (any -> map) | nil,
+          module: module,
+          name: atom,
+          prefilters: [atom | keyword] | nil,
+          setup: (map -> map) | nil,
+          subscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil,
+          tracked: boolean,
+          unsubscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil
+        }
 
   @typedoc "For convenience, state is also accepted within a wrapping map."
-  @type state_or_wrapped :: state | %{managed: state}
+  @type state_or_wrapped :: map
 
   @typedoc """
   A preload spec which is used to build the preload function. This function
@@ -159,53 +160,6 @@ defmodule Indexed.Managed do
   @typep record :: Indexed.record()
   @typep record_or_list :: [record] | record | nil
   @typep managed_or_name :: t | atom
-
-  defstruct [
-    :children,
-    :children_getters,
-    :default_path,
-    :fields,
-    :id_key,
-    :get_fn,
-    :module,
-    :name,
-    :prefilters,
-    :setup,
-    :tracked,
-    :subscribe,
-    :unsubscribe
-  ]
-
-  @typedoc """
-  * `:children` - Map with assoc field name keys `t:assoc_spec/0` values.
-    When this entity is managed, all children will also be managed and so on,
-    recursively.
-  * `:id_key` - Field name atom which carries the id to index with or a
-    function which accepts a record and returns the id to use. Default `:id`.
-  * `:get_fn` - Function which takes a record ID and returns the record from
-    the outside. Invoked by `manage/4` when a tracked record is needed.
-  * `:module` - The struct module which will be used for the records.
-  * `:name` - Atom name of the managed entity.
-  * `:setup` - Function which takes and returns the record when `manage/4`
-    begins. Useful for custom preparation steps.
-  * `:subscribe` - 1-arity function which subscribes to changes by id.
-  * `:unsubscribe` - 1-arity function which unsubscribes to changes by id.
-  """
-  @type t :: %Managed{
-          children: %{atom => assoc_spec},
-          children_getters: %{atom => {module, atom}},
-          default_path: path,
-          fields: [atom | Indexed.Entity.field()],
-          id_key: id_key,
-          get_fn: (any -> map) | nil,
-          module: module,
-          name: atom,
-          prefilters: [atom | keyword] | nil,
-          setup: (map -> map) | nil,
-          subscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil,
-          tracked: boolean,
-          unsubscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil
-        }
 
   defmacro __using__(repo: repo) do
     quote do
@@ -266,6 +220,7 @@ defmodule Indexed.Managed do
         Keyword.put(acc, entity,
           data: [],
           fields: managed.fields,
+          id_key: managed.id_key,
           prefilters: managed.prefilters
         )
       end)
@@ -436,11 +391,14 @@ defmodule Indexed.Managed do
         |> entity_mod.__schema__(path_entry)
         |> Map.fetch!(:related_key)
 
-    assoc_records =
-      assoc_records ++
-        state.repo.all(from(x in assoc_mod, where: field(x, ^fkey) in ^ids))
+    put_list = fn l -> Enum.each(l, &put(state, assoc_name, &1)) end
 
-    Enum.each(assoc_records, &put(state, assoc_name, &1))
+    put_list.(Enum.map(assoc_records, &drop_associations/1))
+
+    from_db = state.repo.all(from(x in assoc_mod, where: field(x, ^fkey) in ^ids))
+    put_list.(from_db)
+
+    assoc_records = assoc_records ++ from_db
 
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
@@ -870,7 +828,7 @@ defmodule Indexed.Managed do
   @spec preload_fn(assoc_spec, module) :: (map, state -> any) | nil
   def preload_fn({:one, name, key}, _repo) do
     fn record, state ->
-      Indexed.get(state.index, name, Map.get(record, key))
+      get(state, name, Map.get(record, key))
     end
   end
 
@@ -879,7 +837,7 @@ defmodule Indexed.Managed do
 
     fn record, state ->
       pf = if pf_key, do: {pf_key, record.id}, else: nil
-      Indexed.get_records(state.index, name, pf, order_hint) || []
+      get_records(state, name, pf, order_hint) || []
     end
   end
 
