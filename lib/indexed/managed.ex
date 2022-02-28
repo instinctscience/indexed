@@ -241,9 +241,12 @@ defmodule Indexed.Managed do
 
   @spec do_manage_finish(state) :: state
   defp do_manage_finish(%{module: mod} = state) do
-    tk = Access.key(:tracking)
-    put_tracking = &put_in(&1, [tk, &2, &3], &4)
-    get_tmp_record = &get_in(state.tmp.records, [&1, &2])
+    trk = Access.key(:tracking)
+    put_tracking = &put_in(&1, [trk, &2, &3], &4)
+    get_tmp_record = &get_in(state.tmp.records, [log(&1, label: "1"), log(&2, label: "2")])
+    # get_tmp_record = &get_in(state.tmp.records, [&1, &2])
+
+    # IO.inspect(state.tmp.records, label: "tmp recor")
 
     handle = fn
       st, name, id, orig_c, new_c when orig_c == 0 and new_c > 0 ->
@@ -256,15 +259,12 @@ defmodule Indexed.Managed do
         log({name, id, orig_c, new_c}, label: "had some, now have none")
         maybe_unsubscribe(mod, name, id)
         drop(st, name, id)
-        update_in(st, [tk, name], &Map.delete(&1, id))
+        update_in(st, [trk, name], &Map.delete(&1, id))
 
-      st, name, id, _orig_c, new_c when new_c > 0 ->
-        log("hi")
-        put(st, name, get_tmp_record.(name, id))
-        put_tracking.(st, name, id, new_c)
-
-      st, name, id, _, new_c ->
-        log("ho")
+      st, name, id, orig_c, new_c ->
+        log({name, id, orig_c, new_c}, label: "hi")
+        tmp_rec = get_tmp_record.(name, id)
+        if tmp_rec, do: put(st, name, tmp_rec)
         put_tracking.(st, name, id, new_c)
     end
 
@@ -281,7 +281,7 @@ defmodule Indexed.Managed do
 
   # Add a record according to its managed config:
   # - If not tracked, just add to the index.
-  # - If tracked, also update tmp tracking data.
+  # - If tracked, add record to tmp and also update tmp tracking data.
   @spec add(state, t, record) :: state
   defp add(state, %{name: name, tracked: false}, record) do
     log("ADD not tracked: #{name}: #{inspect(record)}")
@@ -398,6 +398,7 @@ defmodule Indexed.Managed do
 
     do_puts = fn l -> Enum.each(l, &put(state, assoc_name, &1)) end
     do_puts.(Enum.map(assoc_records, &drop_associations/1))
+    # assoc_records |> Enum.map(&drop_associations/1) |> do_puts.()
 
     q = from x in build_query(assoc_managed), where: field(x, ^fkey) in ^ids
     from_db = state.repo.all(q)
@@ -439,24 +440,30 @@ defmodule Indexed.Managed do
   end
 
   # *** MANY RM - these records have a `has_many :assoc_name` association.
-  defp do_manage_assoc(state, entity_name, _path_entry, spec, :rm, records, sub_path)
+  defp do_manage_assoc(state, entity_name, path_entry, spec, :rm, records, sub_path)
        when :many == elem(spec, 0) do
     {:many, assoc_name, fkey, _} = normalize_many_spec(spec)
-    %{id_key: id_key} = get_managed(state.module, entity_name)
-    %{name: assoc_name} = get_managed(state.module, assoc_name)
+    %{id_key: id_key, module: module} = get_managed(state.module, entity_name)
+    %{id_key: assoc_id_key} = get_managed(state.module, assoc_name)
+    fkey = fkey || get_fkey(module, path_entry)
 
     log({entity_name, "x", assoc_name, fkey}, label: "MANY rm")
     log(records, label: "records")
 
     assoc_records =
       Enum.reduce(records, [], fn record, acc ->
-        id = id(id_key, record)
-        acc ++ get_records(state, assoc_name, {fkey, id})
+        acc ++ get_records(state, assoc_name, {fkey, id(id_key, record)})
       end)
 
-    Enum.each(assoc_records, &drop(state, assoc_name, &1.id))
+    Enum.each(assoc_records, &drop(state, assoc_name, id(assoc_id_key, &1)))
 
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
+  end
+
+  # Get the foreign key for the `path_entry` field of `module`.
+  @spec get_fkey(module, atom) :: atom
+  defp get_fkey(module, path_entry) do
+    module.__schema__(:association, path_entry).related_key
   end
 
   @spec build_query(t) :: Ecto.Queryable.t()
@@ -537,7 +544,7 @@ defmodule Indexed.Managed do
       i -> i
     end
 
-    %{name: name, default_path: default_path} =
+    %{id_key: id_key, name: name, default_path: default_path} =
       managed =
       case mon do
         %{} -> mon
@@ -562,7 +569,7 @@ defmodule Indexed.Managed do
     # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
 
     state = State.init_tmp(state)
-    state = Enum.reduce(orig_records, state, &rm(&2, managed, &1.id))
+    state = Enum.reduce(orig_records, state, &rm(&2, managed, id(id_key, &1)))
     state = Enum.reduce(new_records, state, &add(&2, managed, &1))
 
     state

@@ -113,6 +113,7 @@ defmodule BlogServer do
 
   @impl GenServer
   def handle_info({Blog, [:user, :update], %User{} = new}, state) do
+    Process.put(:bb, :bb)
     {:noreply, manage(state, :users, :update, new, :flare_pieces)}
   end
 
