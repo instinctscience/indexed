@@ -4,10 +4,10 @@ defmodule Indexed.Managed do
 
   By annotating the entities to be managed, `manage/4` can handle updating the
   cache for the given record and its associated records. (If associations are
-  not preloaded, they can be fetched via `:get_fn` by id.) In addition, entites
-  with `:subscribe` and `:unsubscribe` functions defined will be automatically
-  subscribed to and unusbscribed from as the first instance appears and the last
-  one is dropped.
+  not preloaded, they will be automatically fetched.) In addition, entites with
+  `:subscribe` and `:unsubscribe` functions defined will be automatically
+  subscribed to and unusbscribed from as the first reference appears and the
+  last one is dropped.
 
   ## Example
 
@@ -18,7 +18,7 @@ defmodule Indexed.Managed do
           children: [passengers: {:many, :people}]
 
         managed :people, MyApp.Person,
-          get_fn: &MyApp.get_person/1,
+          query_fn: &MyApp.person_query/1,
           subscribe: &MyApp.subscribe_to_person/1,
           unsubscribe: &MyApp.unsubscribe_from_person/1
       end
@@ -32,8 +32,9 @@ defmodule Indexed.Managed do
     `t:assoc_spec/0`s as vals. This is used when recursing in `manage/4` as
     well as when resolving. If an undeclared association is resolved,
     `Repo.get/2` will be used as a fallback.
-  * `:get_fn` - Function which takes an ID and returns the record from the
-    outside. Invoked by `manage/4` when the association is needed.
+  * `:query_fn` - Optional function which takes a queryable and returns a
+    queryable. This allows for extra query logic to be added such as populating
+    virtual fields. Invoked by `manage/4` when the association is needed.
   * `:id_key` - Field name atom which carries the id to index with or a
     function which accepts a record and returns the id to use. Default `:id`.
   * `:setup` - Function which takes and returns the record when `manage/4`
@@ -66,7 +67,7 @@ defmodule Indexed.Managed do
     :default_path,
     :fields,
     :id_key,
-    :get_fn,
+    :query_fn,
     :module,
     :name,
     :prefilters,
@@ -82,8 +83,9 @@ defmodule Indexed.Managed do
     recursively.
   * `:id_key` - Field name atom which carries the id to index with or a
     function which accepts a record and returns the id to use. Default `:id`.
-  * `:get_fn` - Function which takes a record ID and returns the record from
-    the outside. Invoked by `manage/4` when a tracked record is needed.
+  * `:query_fn` - Optional function which takes a queryable and returns a
+    queryable. This allows for extra query logic to be added such as populating
+    virtual fields. Invoked by `manage/4` when the association is needed.
   * `:module` - The struct module which will be used for the records.
   * `:name` - Atom name of the managed entity.
   * `:setup` - Function which takes and returns the record when `manage/4`
@@ -97,7 +99,7 @@ defmodule Indexed.Managed do
           default_path: path,
           fields: [atom | Indexed.Entity.field()],
           id_key: id_key,
-          get_fn: (any -> map) | nil,
+          query_fn: (Ecto.Queryable.t() -> Ecto.Queryable.t()) | nil,
           module: module,
           name: atom,
           prefilters: [atom | keyword] | nil,
@@ -137,7 +139,7 @@ defmodule Indexed.Managed do
   @typedoc """
   A set of tracked entity statuses.
 
-  An entity is tracked if it defines a `:get_fn` function.
+  An entity is tracked if another entity refers to it with a :one relationship.
   """
   @type tracking :: %{atom => tracking_status}
 
@@ -347,7 +349,7 @@ defmodule Indexed.Managed do
          records,
          sub_path
        ) do
-    %{module: assoc_mod} = assoc_managed = get_managed(state, assoc_name)
+    assoc_managed = get_managed(state, assoc_name)
 
     log({entity_name, path_entry, assoc_managed.name, fkey}, label: "ONE add")
     log(records, label: "records")
@@ -359,7 +361,10 @@ defmodule Indexed.Managed do
             {acc_state, acc_assoc_records}
 
           assoc_id ->
-            assoc = assoc_from_record(record, path_entry) || state.repo.get(assoc_mod, assoc_id)
+            assoc =
+              assoc_from_record(record, path_entry) ||
+                state.repo.get(build_query(assoc_managed), assoc_id)
+
             {add(acc_state, assoc_managed, assoc), [assoc | acc_assoc_records]}
         end
       end)
@@ -372,7 +377,7 @@ defmodule Indexed.Managed do
        when :many == elem(spec, 0) do
     {:many, assoc_name, fkey, _} = normalize_many_spec(spec)
     %{id_key: id_key, module: entity_mod} = get_managed(state.module, entity_name)
-    %{module: assoc_mod} = get_managed(state.module, assoc_name)
+    %{module: assoc_mod} = assoc_managed = get_managed(state.module, assoc_name)
 
     log({entity_name, path_entry, assoc_mod, fkey}, label: "MANY add")
     log(records, label: "records")
@@ -391,15 +396,14 @@ defmodule Indexed.Managed do
         |> entity_mod.__schema__(path_entry)
         |> Map.fetch!(:related_key)
 
-    put_list = fn l -> Enum.each(l, &put(state, assoc_name, &1)) end
+    do_puts = fn l -> Enum.each(l, &put(state, assoc_name, &1)) end
+    do_puts.(Enum.map(assoc_records, &drop_associations/1))
 
-    put_list.(Enum.map(assoc_records, &drop_associations/1))
-
-    from_db = state.repo.all(from(x in assoc_mod, where: field(x, ^fkey) in ^ids))
-    put_list.(from_db)
+    q = from x in build_query(assoc_managed), where: field(x, ^fkey) in ^ids
+    from_db = state.repo.all(q)
+    do_puts.(from_db)
 
     assoc_records = assoc_records ++ from_db
-
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
 
@@ -455,6 +459,13 @@ defmodule Indexed.Managed do
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
 
+  @spec build_query(t) :: Ecto.Queryable.t()
+  defp build_query(%{module: assoc_mod, query_fn: nil}),
+    do: assoc_mod
+
+  defp build_query(%{module: assoc_mod, query_fn: query_fn}),
+    do: query_fn.(assoc_mod)
+
   # Many tuple: {:many, entity_name, prefilter_key, order_hint}
   # Optional: prefilter_key, order_hint
   defp normalize_many_spec(tup), do: expand_tuple(tup, 4)
@@ -462,7 +473,7 @@ defmodule Indexed.Managed do
   # Pad `tuple` up to `num` with `nil`.
   @spec expand_tuple(tuple, non_neg_integer) :: tuple
   defp expand_tuple(tuple, num) do
-    case tuple |> Tuple.to_list() |> length() do
+    case length(Tuple.to_list(tuple)) do
       len when len >= num ->
         tuple
 
@@ -574,7 +585,7 @@ defmodule Indexed.Managed do
         children_getters: Map.new(unquote(opts[:children_getters] || [])),
         default_path: default_path,
         fields: unquote(opts[:fields]),
-        get_fn: unquote(opts[:get_fn]),
+        query_fn: unquote(opts[:query_fn]),
         id_key: unquote(opts[:id_key] || :id),
         module: unquote(module),
         name: unquote(name),
@@ -611,7 +622,7 @@ defmodule Indexed.Managed do
       @doc """
       Given a managed entity name or module and a field, return the preload
       function which will take a record and state and return the association
-      record or list of records.
+      record or list of records for `key`.
       """
       @spec __preload_fn__(atom, atom, module) :: (map, Managed.State.t() -> map | [map]) | nil
       def __preload_fn__(name, key, repo) do
