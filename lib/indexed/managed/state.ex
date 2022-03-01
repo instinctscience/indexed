@@ -7,6 +7,9 @@ defmodule Indexed.Managed.State do
   @typedoc """
   Data structure used to hold temporary data while running an operation.
 
+  * `:keep` - Map of entity names to lists of IDs for records which may
+    otherwise be deleted because refs are 0 but in fact should NOT be deleted
+    because we are holding another record with a has_many relationship.
   * `:records` - Outer map is keyed by entity name. Inner map is keyed by
     record id. Values are the records themselves. These are new records which
     may be committed to ETS at the end of the operation.
@@ -14,6 +17,7 @@ defmodule Indexed.Managed.State do
     copied from State and manipulated as needed within this structure.
   """
   @type tmp :: %{
+          keep: %{atom => [Indexed.id()]},
           records: %{atom => %{Indexed.id() => Indexed.record()}},
           tracking: Managed.tracking()
         }
@@ -38,7 +42,7 @@ defmodule Indexed.Managed.State do
   @spec init_tmp(t) :: t
   def init_tmp(%{module: mod} = state) do
     records = Map.new(mod.__tracked__(), &{&1, %{}})
-    %{state | tmp: %{records: records, tracking: init_tracking(mod)}}
+    %{state | tmp: %{keep: %{}, records: records, tracking: init_tracking(mod)}}
   end
 
   @spec init_tracking(module) :: map

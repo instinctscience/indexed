@@ -2,6 +2,7 @@ defmodule Blog do
   @moduledoc """
   Facade for operations.
   """
+  import Ecto.Query
   alias Indexed.Test.Repo
 
   @pubsub Blog
@@ -43,6 +44,9 @@ defmodule Blog do
   def all_posts, do: Repo.all(Post)
   def all_comments, do: Repo.all(Comment)
   def all_users, do: Repo.all(User)
+
+  def all_replies(this_blog: true), do: Repo.all(from Reply, where: [this_blog: true])
+  def all_replies, do: Repo.all(Reply)
 
   def get_post(id), do: Repo.get(Post, id)
   def get_user(id) when is_integer(id), do: Repo.get(User, id)

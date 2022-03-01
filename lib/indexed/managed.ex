@@ -66,6 +66,7 @@ defmodule Indexed.Managed do
     :children_getters,
     :default_path,
     :fields,
+    :foreign_many_refs,
     :id_key,
     :query_fn,
     :module,
@@ -98,6 +99,7 @@ defmodule Indexed.Managed do
           children_getters: %{atom => {module, atom}},
           default_path: path,
           fields: [atom | Indexed.Entity.field()],
+          foreign_many_refs: keyword({atom, atom}),
           id_key: id_key,
           query_fn: (Ecto.Queryable.t() -> Ecto.Queryable.t()) | nil,
           module: module,
@@ -179,8 +181,8 @@ defmodule Indexed.Managed do
 
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
       @spec warm(atom, Managed.data_opt()) :: Managed.State.t()
-      def warm(entity_name, data_opt) do
-        warm(entity_name, data_opt, nil)
+      def warm(name, data_opt) do
+        warm(name, data_opt, nil)
       end
 
       @doc """
@@ -199,22 +201,22 @@ defmodule Indexed.Managed do
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
       @spec warm(Managed.state_or_wrapped(), atom, Managed.data_opt(), Managed.path()) ::
               Managed.state_or_wrapped()
-      def warm(%{managed: nil} = state, entity_name, data_opt, path),
-        do: %{state | managed: warm(init_managed_state(), entity_name, data_opt, path)}
+      def warm(%{managed: nil} = state, name, data_opt, path),
+        do: %{state | managed: warm(init_managed_state(), name, data_opt, path)}
 
-      def warm(%{managed: managed} = state, entity_name, data_opt, path),
-        do: %{state | managed: warm(managed, entity_name, data_opt, path)}
+      def warm(%{managed: managed} = state, name, data_opt, path),
+        do: %{state | managed: warm(managed, name, data_opt, path)}
 
-      def warm(state, entity_name, data_opt, path),
-        do: do_warm(state, entity_name, data_opt, path)
+      def warm(state, name, data_opt, path),
+        do: do_warm(state, name, data_opt, path)
     end
   end
 
   @doc "Loads data into index, populating `:tracked` and subscribing as needed."
   @spec do_warm(state, atom, data_opt, path | nil) :: state
-  def do_warm(state, entity_name, data, path \\ nil)
+  def do_warm(state, name, data, path \\ nil)
 
-  def do_warm(%{index: nil, module: mod} = state, entity_name, data, path) do
+  def do_warm(%{index: nil, module: mod} = state, name, data, path) do
     warm_args =
       Enum.reduce(mod.__managed__(), [], fn entity, acc ->
         managed = get_managed(mod, entity)
@@ -228,15 +230,15 @@ defmodule Indexed.Managed do
       end)
 
     state = %{state | index: Indexed.warm(warm_args)}
-    do_warm(state, entity_name, data, path)
+    do_warm(state, name, data, path)
   end
 
-  def do_warm(%{module: mod} = state, entity_name, data, path) do
+  def do_warm(%{module: mod} = state, name, data, path) do
     # TODO - could probably make use of data_opt properly
-    managed = get_managed(mod, entity_name)
-    {_, _, records} = Warm.resolve_data_opt(data, entity_name, managed.fields)
+    managed = get_managed(mod, name)
+    {_, _, records} = Warm.resolve_data_opt(data, name, managed.fields)
 
-    manage(state, entity_name, [], records, path)
+    manage(state, name, [], records, path)
   end
 
   @spec do_manage_finish(state) :: state
@@ -249,18 +251,24 @@ defmodule Indexed.Managed do
     # IO.inspect(state.tmp.records, label: "tmp recor")
 
     handle = fn
+      # Had 0 references, now have 1+.
       st, name, id, orig_c, new_c when orig_c == 0 and new_c > 0 ->
         log({name, id, orig_c, new_c}, label: "had none, now have some")
         maybe_subscribe(mod, name, id)
         put(st, name, get_tmp_record.(name, id))
         put_tracking.(st, name, id, new_c)
 
+      # Had 1+ references, now have 0.
       st, name, id, orig_c, new_c when orig_c > 0 and new_c == 0 ->
         log({name, id, orig_c, new_c}, label: "had some, now have none")
+
+        unless id in (get_in(st.tmp, [:keep, name]) || []),
+          do: drop(st, name, id)
+
         maybe_unsubscribe(mod, name, id)
-        drop(st, name, id)
         update_in(st, [trk, name], &Map.delete(&1, id))
 
+      # Had 1+, still have 1+. If new record isn't in tmp, it is unchanged.
       st, name, id, orig_c, new_c ->
         log({name, id, orig_c, new_c}, label: "hi")
         tmp_rec = get_tmp_record.(name, id)
@@ -310,28 +318,38 @@ defmodule Indexed.Managed do
     state
   end
 
-  defp rm(state, %{name: name}, id) do
-    cur = tracking_tmp(state, name, id)
-    log("RM tracked: #{name}: id #{id}: new tracking #{cur - 1}")
-    cur > 0 || raise "Couldn't remove reference for #{name}: already at 0."
+  defp rm(state, %{foreign_many_refs: fmrs, name: name}, id) do
+    fun = fn {assoc_name, fkey} ->
+      assoc_id = Map.fetch!(get(state, name, id), fkey)
+      is_map(get(state, assoc_name, assoc_id))
+    end
 
-    put_in(state, [Access.key(:tmp), :tracking, name, id], cur - 1)
+    cur = tracking_tmp(state, name, id)
+    tmp = Access.key(:tmp)
+
+    cond do
+      cur > 0 ->
+        log("RM tracked: #{name}: id #{id}: new tracking #{cur - 1}")
+        put_in(state, [tmp, :tracking, name, id], cur - 1)
+
+      Enum.any?(fmrs, fun) ->
+        # 0 refs is ok because another entity still `has_many` to this.
+        update_in(state, [tmp, :keep, name], &[id | &1])
+
+      true ->
+        raise "Couldn't remove reference for #{name}: already at 0."
+    end
   end
 
   # Handle managing associations according to `path` but not records themselves.
   @spec do_manage_path(state, atom, add_or_rm, [record], keyword) :: state
-  defp do_manage_path(state, entity_name, action, records, path) do
+  defp do_manage_path(state, name, action, records, path) do
     Enum.reduce(path, state, fn {path_entry, sub_path}, acc ->
       log({path_entry, sub_path}, label: "do_manage_path path")
-      %{children: children} = get_managed(acc.module, entity_name)
+      %{children: children} = get_managed(acc.module, name)
       spec = Map.fetch!(children, path_entry)
 
-      # # We don't need the order_hint.
-      # spec =
-      #   with {:many, a, b, _c} <- Map.fetch!(children, path_entry),
-      #        do: {:many, a, b}
-
-      do_manage_assoc(acc, entity_name, path_entry, spec, action, records, sub_path)
+      do_manage_assoc(acc, name, path_entry, spec, action, records, sub_path)
     end)
   end
 
@@ -339,10 +357,9 @@ defmodule Indexed.Managed do
   # Then recursively handle associations according to sub_path therein.
   @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword) :: state
   # *** ONE ADD - these records have a `belongs_to :assoc_name` association.
-  # {:many, assoc_name, fkey, _} = expand_tuple(spec, 4)
   defp do_manage_assoc(
          state,
-         entity_name,
+         name,
          path_entry,
          {:one, assoc_name, fkey},
          :add,
@@ -351,7 +368,7 @@ defmodule Indexed.Managed do
        ) do
     assoc_managed = get_managed(state, assoc_name)
 
-    log({entity_name, path_entry, assoc_managed.name, fkey}, label: "ONE add")
+    log({name, path_entry, assoc_managed.name, fkey}, label: "ONE add")
     log(records, label: "records")
 
     {state, assoc_records} =
@@ -373,13 +390,13 @@ defmodule Indexed.Managed do
   end
 
   # *** MANY ADD - these records have a `has_many :assoc_name` association.
-  defp do_manage_assoc(state, entity_name, path_entry, spec, :add, records, sub_path)
+  defp do_manage_assoc(state, name, path_entry, spec, :add, records, sub_path)
        when :many == elem(spec, 0) do
     {:many, assoc_name, fkey, _} = normalize_many_spec(spec)
-    %{id_key: id_key, module: entity_mod} = get_managed(state.module, entity_name)
+    %{id_key: id_key, module: entity_mod} = get_managed(state.module, name)
     %{module: assoc_mod} = assoc_managed = get_managed(state.module, assoc_name)
 
-    log({entity_name, path_entry, assoc_mod, fkey}, label: "MANY add")
+    log({name, path_entry, assoc_mod, fkey}, label: "MANY add")
     log(records, label: "records")
 
     {assoc_records, ids} =
@@ -398,7 +415,6 @@ defmodule Indexed.Managed do
 
     do_puts = fn l -> Enum.each(l, &put(state, assoc_name, &1)) end
     do_puts.(Enum.map(assoc_records, &drop_associations/1))
-    # assoc_records |> Enum.map(&drop_associations/1) |> do_puts.()
 
     q = from x in build_query(assoc_managed), where: field(x, ^fkey) in ^ids
     from_db = state.repo.all(q)
@@ -411,7 +427,7 @@ defmodule Indexed.Managed do
   # *** ONE RM - these records have a `belongs_to :assoc_name` association.
   defp do_manage_assoc(
          state,
-         entity_name,
+         name,
          path_entry,
          {:one, assoc_name, fkey},
          :rm,
@@ -420,7 +436,7 @@ defmodule Indexed.Managed do
        ) do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
 
-    log({entity_name, path_entry, assoc_managed.name, fkey, sub_path}, label: "ONE rm")
+    log({name, path_entry, assoc_managed.name, fkey, sub_path}, label: "ONE rm")
     log(records, label: "records")
     # ONE rm: {:comments, :author, :users, :author_id}
 
@@ -440,14 +456,14 @@ defmodule Indexed.Managed do
   end
 
   # *** MANY RM - these records have a `has_many :assoc_name` association.
-  defp do_manage_assoc(state, entity_name, path_entry, spec, :rm, records, sub_path)
+  defp do_manage_assoc(state, name, path_entry, spec, :rm, records, sub_path)
        when :many == elem(spec, 0) do
     {:many, assoc_name, fkey, _} = normalize_many_spec(spec)
-    %{id_key: id_key, module: module} = get_managed(state.module, entity_name)
+    %{id_key: id_key, module: module} = get_managed(state.module, name)
     %{id_key: assoc_id_key} = get_managed(state.module, assoc_name)
     fkey = fkey || get_fkey(module, path_entry)
 
-    log({entity_name, "x", assoc_name, fkey}, label: "MANY rm")
+    log({name, "x", assoc_name, fkey}, label: "MANY rm")
     log(records, label: "records")
 
     assoc_records =
@@ -592,6 +608,7 @@ defmodule Indexed.Managed do
         children_getters: Map.new(unquote(opts[:children_getters] || [])),
         default_path: default_path,
         fields: unquote(opts[:fields]),
+        foreign_many_refs: [],
         query_fn: unquote(opts[:query_fn]),
         id_key: unquote(opts[:id_key] || :id),
         module: unquote(module),
@@ -607,7 +624,6 @@ defmodule Indexed.Managed do
 
   defmacro __before_compile__(%{module: mod}) do
     attr = &Module.get_attribute(mod, &1)
-
     validate_before_compile!(mod, attr.(:managed_repo), attr.(:managed_setup))
     Module.put_attribute(mod, :managed, rewrite_managed(attr.(:managed_setup)))
     Module.delete_attribute(mod, :managed_setup)
@@ -643,24 +659,32 @@ defmodule Indexed.Managed do
   end
 
   @doc """
-  Set the `:tracked` option on the managed structs where another references it
-  with a `:one` association.
+  Make some automatic adjustments to the manageds list:
+
+  * Set the `:tracked` option on the managed structs where another references it
+    with a `:one` association.
+  * Set `:foreign_many_refs` to list other entities with has_many references.
   """
   @spec rewrite_managed([t]) :: [t]
   def rewrite_managed(manageds) do
-    set_tracked = fn list, entity ->
-      Enum.map(list, &if(&1.name == entity, do: %{&1 | tracked: true}, else: &1))
+    put = fn list, entity, fun ->
+      Enum.map(list, &if(&1.name == entity, do: fun.(&1), else: &1))
     end
 
-    manageds =
-      Enum.reduce(manageds, manageds, fn %{children: children}, acc ->
-        Enum.reduce(children, acc, fn
-          {_key, {:one, entity, _fkey}}, acc2 -> set_tracked.(acc2, entity)
-          _, acc2 -> acc2
-        end) ++ acc
-      end)
+    Enum.reduce(manageds, manageds, fn %{children: children, name: name}, acc ->
+      Enum.reduce(children, acc, fn
+        {_key, {:one, entity, _fkey}}, acc2 ->
+          put.(acc2, entity, &Map.put(&1, :tracked, true))
 
-    Enum.uniq(manageds)
+        {_key, spec}, acc2 when :many == elem(spec, 0) ->
+          put.(acc2, elem(spec, 1), fn %{foreign_many_refs: fmrs} = m ->
+            %{m | foreign_many_refs: [{name, elem(spec, 2)} | fmrs]}
+          end)
+
+        _, acc2 ->
+          acc2
+      end)
+    end)
   end
 
   @spec validate_before_compile!(module, module, list) :: :ok

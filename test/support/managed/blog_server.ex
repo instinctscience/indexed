@@ -16,7 +16,8 @@ defmodule BlogServer do
     prefilters: [:post_id],
     children: [
       author: {:one, :users, :author_id},
-      post: {:one, :posts, :post_id}
+      post: {:one, :posts, :post_id},
+      replies: {:many, :replies, :comment_id}
     ]
 
   managed :users, User,
@@ -30,6 +31,11 @@ defmodule BlogServer do
   managed :flare_pieces, FlarePiece,
     fields: [:name],
     prefilters: [:user_id]
+
+  # When `:this_blog` is false, don't keep them in the cache.
+  managed :replies, Reply,
+    fields: [:id],
+    children: [comment: {:one, :comments, :comment_id}]
 
   def call(msg), do: GenServer.call(__MODULE__, msg)
   def run(fun), do: call({:run, fun})
@@ -47,10 +53,12 @@ defmodule BlogServer do
     Process.put(:feedback_pid, opts[:feedback_pid])
 
     posts = Blog.all_posts()
-    a_path = {:author, :flare_pieces}
-    posts_path = [a_path, comments: [a_path]]
+    replies = Blog.all_replies(this_blog: true)
 
-    {:ok, warm(:posts, posts, posts_path)}
+    {:ok,
+     init_managed_state()
+     |> warm(:posts, posts, author: :flare_pieces, comments: [author: :flare_pieces])
+     |> warm(:replies, replies, :comment)}
   end
 
   @impl GenServer
@@ -82,10 +90,10 @@ defmodule BlogServer do
         {:reply, :error, state}
 
       comment ->
-        ret = Repo.delete(comment)
-        # Process.put(:bb, :bb)
-        state = manage(state, :comments, comment, nil, author: :flare_pieces)
-        {:reply, ret, state}
+        Process.put(:bb, :bb)
+
+        {:reply, Repo.delete(comment),
+         manage(state, :comments, comment, nil, author: :flare_pieces)}
     end
   end
 

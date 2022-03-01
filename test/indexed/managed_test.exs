@@ -85,6 +85,7 @@ defmodule Indexed.ManagedTest do
     assert %{1 => 4, 3 => 1} == tracking(bs_pid, :users)
 
     assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
+    |> IO.inspect(label: "hay")
 
     refute Enum.any?(records(:flare_pieces), &(&1.name in ~w(hat mitten)))
     refute Enum.any?(records(:users), &(&1.name == "jill"))

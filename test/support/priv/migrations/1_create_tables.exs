@@ -30,5 +30,11 @@ defmodule Indexed.Test.Repo.Migrations.CreateCar do
       add(:post_id, references(:posts))
       timestamps()
     end
+
+    create table(:replies) do
+      add(:comment_id, references(:comments))
+      add(:content, :string)
+      add(:this_blog, :boolean)
+    end
   end
 end

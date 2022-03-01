@@ -7,6 +7,7 @@ defmodule Comment do
     belongs_to :author, User
     field :content, :string
     belongs_to :post, Post
+    has_many :replies, Reply
     timestamps()
   end
 
