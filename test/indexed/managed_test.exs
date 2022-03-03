@@ -76,16 +76,19 @@ defmodule Indexed.ManagedTest do
              }
            ] = entries()
 
+    assert [%{name: "fred"}, %{name: "jill"}, %{name: "lee"}] = records(:users)
     assert %{1 => 4, 2 => 1, 3 => 1} = tracking(bs_pid, :users)
 
     {:ok, _} = Blog.delete_comment(comment_id)
 
     assert_receive [:unsubscribe, "user-2"]
-
+    assert [%{name: "fred"}, %{name: "lee"}] = records(:users)
     assert %{1 => 4, 3 => 1} == tracking(bs_pid, :users)
 
-    assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
+    BlogServer.paginate(preload: [:comments]).entries
     |> IO.inspect(label: "hay")
+
+    assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
 
     refute Enum.any?(records(:flare_pieces), &(&1.name in ~w(hat mitten)))
     refute Enum.any?(records(:users), &(&1.name == "jill"))

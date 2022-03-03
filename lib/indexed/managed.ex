@@ -262,8 +262,13 @@ defmodule Indexed.Managed do
       st, name, id, orig_c, new_c when orig_c > 0 and new_c == 0 ->
         log({name, id, orig_c, new_c}, label: "had some, now have none")
 
-        unless id in (get_in(st.tmp, [:keep, name]) || []),
-          do: drop(st, name, id)
+        IO.inspect(st.tmp.keep, label: "keeps #{name}")
+        # unless id in Map.get(st.tmp.keep, name, []),
+        #   do: drop(st, name, id)
+        unless id in Map.get(st.tmp.keep, name, []) do
+          IO.inspect(label: "dropping #{name} #{id}")
+          drop(st, name, id)
+        end
 
         maybe_unsubscribe(mod, name, id)
         update_in(st, [trk, name], &Map.delete(&1, id))
@@ -311,19 +316,23 @@ defmodule Indexed.Managed do
   # Remove a record according to its managed config:
   # - If not tracked, just remove it from the index.
   # - If tracked, also update tmp tracking data.
-  @spec rm(state, t, id) :: state
-  defp rm(state, %{name: name, tracked: false}, id) do
-    log("RM not tracked: #{name}: id #{id}")
-    drop(state, name, id)
+  # If `skip_keep?` is true, skip the "keep" logic.
+  @spec rm(state, t, record, boolean) :: state
+  defp rm(state, managed, record, skip_keep? \\ false)
+
+  defp rm(state, %{id_key: id_key, name: name, tracked: false}, record, _force?) do
+    log("RM not tracked: #{name}: id #{id(id_key, record)}")
+    drop(state, name, id(id_key, record))
     state
   end
 
-  defp rm(state, %{foreign_many_refs: fmrs, name: name}, id) do
+  defp rm(state, %{id_key: id_key, foreign_many_refs: fmrs, name: name}, record, skip_keep?) do
     fun = fn {assoc_name, fkey} ->
-      assoc_id = Map.fetch!(get(state, name, id), fkey)
+      assoc_id = Map.fetch!(record, fkey)
       is_map(get(state, assoc_name, assoc_id))
     end
 
+    id = id(id_key, record)
     cur = tracking_tmp(state, name, id)
     tmp = Access.key(:tmp)
 
@@ -332,9 +341,18 @@ defmodule Indexed.Managed do
         log("RM tracked: #{name}: id #{id}: new tracking #{cur - 1}")
         put_in(state, [tmp, :tracking, name, id], cur - 1)
 
-      Enum.any?(fmrs, fun) ->
-        # 0 refs is ok because another entity still `has_many` to this.
-        update_in(state, [tmp, :keep, name], &[id | &1])
+      # Enum.any?(fmrs, fun) ->
+      #   # 0 refs is ok because another entity still `has_many` to this.
+      #   # if skip_keep?,
+      #   #   do: state,
+      #   #   else: update_in(state, [tmp, :keep, name], &[id | &1])
+      #   if skip_keep? do
+      #     log(record, label: "skip keep!")
+      #     state
+      #   else
+      #     log(record, label: "not skip keep")
+      #     update_in(state, [tmp, :keep, name], &[id | &1])
+      #   end
 
       true ->
         raise "Couldn't remove reference for #{name}: already at 0."
@@ -357,15 +375,7 @@ defmodule Indexed.Managed do
   # Then recursively handle associations according to sub_path therein.
   @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword) :: state
   # *** ONE ADD - these records have a `belongs_to :assoc_name` association.
-  defp do_manage_assoc(
-         state,
-         name,
-         path_entry,
-         {:one, assoc_name, fkey},
-         :add,
-         records,
-         sub_path
-       ) do
+  defp do_manage_assoc(state, name, path_entry, {:one, assoc_name, fkey}, :add, records, sub_path) do
     assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey}, label: "ONE add")
@@ -425,15 +435,7 @@ defmodule Indexed.Managed do
   end
 
   # *** ONE RM - these records have a `belongs_to :assoc_name` association.
-  defp do_manage_assoc(
-         state,
-         name,
-         path_entry,
-         {:one, assoc_name, fkey},
-         :rm,
-         records,
-         sub_path
-       ) do
+  defp do_manage_assoc(state, name, path_entry, {:one, assoc_name, fkey}, :rm, records, sub_path) do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey, sub_path}, label: "ONE rm")
@@ -448,7 +450,7 @@ defmodule Indexed.Managed do
 
           assoc_id ->
             assoc = get(acc_state, assoc_name, assoc_id)
-            {rm(acc_state, assoc_managed, assoc_id), [assoc | acc_assoc_records]}
+            {rm(acc_state, assoc_managed, assoc), [assoc | acc_assoc_records]}
         end
       end)
 
@@ -560,7 +562,7 @@ defmodule Indexed.Managed do
       i -> i
     end
 
-    %{id_key: id_key, name: name, default_path: default_path} =
+    %{name: name, default_path: default_path} =
       managed =
       case mon do
         %{} -> mon
@@ -585,7 +587,7 @@ defmodule Indexed.Managed do
     # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
 
     state = State.init_tmp(state)
-    state = Enum.reduce(orig_records, state, &rm(&2, managed, id(id_key, &1)))
+    state = Enum.reduce(orig_records, state, &rm(&2, managed, &1, true))
     state = Enum.reduce(new_records, state, &add(&2, managed, &1))
 
     state
