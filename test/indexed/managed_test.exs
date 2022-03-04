@@ -84,10 +84,6 @@ defmodule Indexed.ManagedTest do
     assert_receive [:unsubscribe, "user-2"]
     assert [%{name: "fred"}, %{name: "lee"}] = records(:users)
     assert %{1 => 4, 3 => 1} == tracking(bs_pid, :users)
-
-    BlogServer.paginate(preload: [:comments]).entries
-    |> IO.inspect(label: "hay")
-
     assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
 
     refute Enum.any?(records(:flare_pieces), &(&1.name in ~w(hat mitten)))
@@ -110,6 +106,18 @@ defmodule Indexed.ManagedTest do
 
     assert %{content: "ho", author: %{name: "bob"}, post: %{content: "Hello World"}} =
              record(:comments, comment2_id, [:author, :post])
+  end
+
+  test "update entity which has foreign one and many connections" do
+    %{bs_pid: _bs_pid} = basic_setup()
+
+    {:ok, _} = Blog.update_comment(1, "new stuff to say")
+
+    # Repo.insert!(%Post{author_id: bob.id, content: "Hello World"})
+
+    # start_supervised!(BlogServer.child_spec(feedback_pid: self()))
+
+    # {:ok, _} = Blog.update_user(bob, %{name: "not bob"})
   end
 
   @tag :skip

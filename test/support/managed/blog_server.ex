@@ -32,6 +32,7 @@ defmodule BlogServer do
     fields: [:name],
     prefilters: [:user_id]
 
+  # These basically exist so comments can have a :one and a :many ref.
   # When `:this_blog` is false, don't keep them in the cache.
   managed :replies, Reply,
     fields: [:id],
@@ -84,14 +85,24 @@ defmodule BlogServer do
     end
   end
 
+  def handle_call({:update_comment, comment_id, content}, _from, state) do
+    with %{} = comment <- get(state, :comments, comment_id),
+         %{valid?: true} = cs <- Comment.changeset(comment, %{content: content}),
+         {:ok, new_comment} = ok <- Repo.update(cs) do
+          Process.put :bb, :bb
+      {:reply, ok, manage(state, :comments, comment, new_comment)}
+    else
+      {:error, _cs} = err -> {:reply, err, state}
+      _ -> {:reply, :error, state}
+    end
+  end
+
   def handle_call({:delete_comment, comment_id}, _from, state) do
     case get(state, :comments, comment_id) do
       nil ->
         {:reply, :error, state}
 
       comment ->
-        Process.put(:bb, :bb)
-
         {:reply, Repo.delete(comment),
          manage(state, :comments, comment, nil, author: :flare_pieces)}
     end
@@ -121,7 +132,6 @@ defmodule BlogServer do
 
   @impl GenServer
   def handle_info({Blog, [:user, :update], %User{} = new}, state) do
-    Process.put(:bb, :bb)
     {:noreply, manage(state, :users, :update, new, :flare_pieces)}
   end
 

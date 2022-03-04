@@ -66,6 +66,10 @@ defmodule Blog do
     %User{} |> User.changeset(params) |> Repo.insert()
   end
 
+  def update_comment(comment_id, content) do
+    BlogServer.call({:update_comment, comment_id, content})
+  end
+
   def update_flare(flare, params) do
     flare |> FlarePiece.changeset(params) |> Repo.update() |> broadcast([:user, :update])
   end
