@@ -40,15 +40,16 @@ defmodule Indexed.ManagedTest do
 
     bs = start_supervised!(BlogServer.child_spec(feedback_pid: self()))
 
-    assert_receive [:subscribe, "user-1"]
-    assert_receive [:subscribe, "user-2"]
-    assert_receive [:subscribe, "user-3"]
+    {s1, s2, s3} = {"user-#{bob_id}", "user-#{jill_id}", "user-#{lee_id}"}
+    assert_receive [:subscribe, ^s1]
+    assert_receive [:subscribe, ^s2]
+    assert_receive [:subscribe, ^s3]
 
-    %{bs_pid: bs}
+    %{bs_pid: bs, ids: %{bob: bob_id, jill: jill_id, lee: lee_id}}
   end
 
   test "basic" do
-    %{bs_pid: bs_pid} = basic_setup()
+    %{bs_pid: bs_pid, ids: %{bob: bob_id, jill: jill_id}} = basic_setup()
 
     bob = Blog.get_user("bob")
     {:ok, _} = Blog.update_user(bob, %{name: "fred"})
@@ -77,13 +78,14 @@ defmodule Indexed.ManagedTest do
            ] = entries()
 
     assert [%{name: "fred"}, %{name: "jill"}, %{name: "lee"}] = records(:users)
-    assert %{1 => 4, 2 => 1, 3 => 1} = tracking(bs_pid, :users)
+    assert %{^bob_id => 4, ^jill_id => 1, ^lee_id => 1} = tracking(bs_pid, :users)
 
     {:ok, _} = Blog.delete_comment(comment_id)
 
-    assert_receive [:unsubscribe, "user-2"]
+    msg = "user-#{jill_id}"
+    assert_receive [:unsubscribe, ^msg]
     assert [%{name: "fred"}, %{name: "lee"}] = records(:users)
-    assert %{1 => 4, 3 => 1} == tracking(bs_pid, :users)
+    assert %{bob_id => 4, lee_id => 1} == tracking(bs_pid, :users)
     assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
 
     refute Enum.any?(records(:flare_pieces), &(&1.name in ~w(hat mitten)))
@@ -110,14 +112,33 @@ defmodule Indexed.ManagedTest do
 
   test "update entity which has foreign one and many connections" do
     %{bs_pid: _bs_pid} = basic_setup()
+    %{id: comment_id} = entries() |> hd() |> Map.fetch!(:comments) |> hd()
+    msg = "new stuff to say"
 
-    {:ok, _} = Blog.update_comment(1, "new stuff to say")
+    {:ok, _} = Blog.update_comment(comment_id, msg)
 
-    # Repo.insert!(%Post{author_id: bob.id, content: "Hello World"})
+    %{content: ^msg} = entries() |> hd() |> Map.fetch!(:comments) |> hd()
+  end
 
-    # start_supervised!(BlogServer.child_spec(feedback_pid: self()))
+  test "update many assoc: of 2, update 1 and delete 1" do
+    %{bs_pid: _bs_pid, ids: %{jill: jill_id}} = basic_setup()
 
-    # {:ok, _} = Blog.update_user(bob, %{name: "not bob"})
+    %{id: post_id, content: "My post" <> _, comments: [%{id: c1_id, content: "woah"}, %{content: "wow"}]} =
+      Enum.find(entries() |> IO.inspect(label: "entries"), &String.contains?(&1.content, "best"))
+
+    assert {:ok,
+            %{content: "plenty best", comments: [%{id: ^c1_id, content: "woah indeed"}]}} =
+             Blog.update_post(post_id,
+               content: "plenty best",
+               comments: [%{id: c1_id, content: "woah indeed"}]
+             )
+
+    msg = "user-#{jill_id}"
+    assert_receive [:unsubscribe, ^msg]
+
+    # {:ok, _} = Blog.update_comment(comment_id, msg)
+
+    # %{content: ^msg} = entries() |> hd() |> Map.fetch!(:comments) |> hd()
   end
 
   @tag :skip

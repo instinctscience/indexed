@@ -22,6 +22,7 @@ defmodule Blog do
   end
 
   def unsubscribe(topic) do
+    IO.inspect(topic, label: "hi")
     maybe_send([:unsubscribe, topic])
     Phoenix.PubSub.unsubscribe(@pubsub, topic)
   end
@@ -64,6 +65,10 @@ defmodule Blog do
     pieces = Enum.map(flare_piece_names, &%{name: &1})
     params = %{name: name, flare_pieces: pieces}
     %User{} |> User.changeset(params) |> Repo.insert()
+  end
+
+  def update_post(post_id, params) do
+    BlogServer.call({:update_post, post_id, Map.new(params)})
   end
 
   def update_comment(comment_id, content) do
