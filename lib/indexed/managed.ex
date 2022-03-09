@@ -248,6 +248,76 @@ defmodule Indexed.Managed do
     manage(state, name, [], records, path)
   end
 
+  @doc """
+  Add, remove or update a managed record or list of them.
+
+  The `name` entity should be declared as `managed`.
+
+  If `state` is a map, wrapping the managed state under a `:managed` key, it
+  will be used as appropriate and returned re-wrapped.
+  """
+  @spec manage(
+          state_or_wrapped,
+          managed_or_name,
+          :insert | :update | record_or_list,
+          record_or_list,
+          path
+        ) ::
+          state_or_wrapped
+  def manage(state, mon, orig, new, path \\ nil)
+
+  def manage(%{managed: managed_state} = state, mon, orig, new, path) do
+    %{state | managed: manage(managed_state, mon, orig, new, path)}
+  end
+
+  def manage(state, mon, orig, new, path) do
+    # new = if new && setup, do: setup.(new), else: new
+
+    to_list = fn
+      nil -> []
+      i when is_map(i) -> [i]
+      i -> i
+    end
+
+    %{name: name, default_path: default_path} =
+      managed =
+      case mon do
+        %{} -> mon
+        name -> get_managed(state, name)
+      end
+
+    orig =
+      case orig do
+        :insert -> nil
+        :update -> %{} = get(state, name, new.id)
+        og -> og
+      end
+
+    path =
+      case path do
+        nil -> default_path
+        p -> normalize_preload(p)
+      end
+
+    new_records = to_list.(new)
+    orig_records = to_list.(orig)
+    # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
+
+    l = &length/1
+    log("MANAGE: #{name}: #{l.(orig_records)} to #{l.(new_records)}")
+
+    manage_top = &Enum.reduce(&2, &1, &3)
+    manage_path = &do_manage_path(&1, name, &3, &2, path)
+
+    state
+    |> State.init_tmp()
+    |> manage_top.(orig_records, &rm(&2, {:top, name}, managed, &1))
+    |> manage_path.(orig_records, :rm)
+    |> manage_top.(new_records, &add(&2, {:top, name}, managed, &1))
+    |> manage_path.(new_records, :add)
+    |> do_manage_finish()
+  end
+
   @spec do_manage_finish(state) :: state
   defp do_manage_finish(%{module: mod} = state) do
     trk = Access.key(:tracking)
@@ -262,7 +332,7 @@ defmodule Indexed.Managed do
     handle = fn
       # Had 0 references, now have 1+.
       st, name, id, 0, new_c when new_c > 0 ->
-        log({name, id, 0, new_c}, label: "had none, now have some")
+        log({name, id, 0, new_c}, label: "had 0, now have 1+")
         maybe_subscribe(mod, name, id)
         put(st, name, get_tmp_record.(name, id))
         put_tracking.(st, name, id, new_c)
@@ -271,14 +341,15 @@ defmodule Indexed.Managed do
       # Had 1+ references, now have 0.
       # st, name, id, orig_c, new_c when orig_c > 0 and new_c == 0 ->
       st, name, id, orig_c, 0 ->
-        log({name, id, orig_c, 0}, label: "had some, now have none")
+        log({name, id, orig_c, 0}, label: "had some, now have 0")
 
-        # IO.inspect(st.tmp.keep, label: "keeps #{name}")
+        log(st.tmp.keep, label: "keeps #{name}")
         # unless id in Map.get(st.tmp.keep, name, []),
         #   do: drop(st, name, id)
         # unless id in Map.get(st.tmp.keep, name, []) do
         unless has_referring_many?(state, name, id) do
-          # IO.inspect(label: "dropping #{name} #{id}")
+          log(label: "dropping #{name} #{id}")
+          maybe_unsubscribe(mod, name, id)
           drop(st, name, id)
         end
 
@@ -288,7 +359,9 @@ defmodule Indexed.Managed do
       # Had 1+, still have 1+. If new record isn't in tmp, it is unchanged.
       st, name, id, orig_c, new_c ->
         log({name, "id #{id}", orig_c, new_c}, label: "had 1+ still have 1+")
-        tmp_rec = get_tmp_record.(name, id) |> IO.inspect(label: "tmprec")
+        log(state.tmp.tracking, label: "TMP")
+        log(state.tracking, label: "TRK")
+        tmp_rec = get_tmp_record.(name, id) |> log(label: "tmprec")
         if tmp_rec, do: put(st, name, tmp_rec)
         put_tracking.(st, name, id, new_c)
     end
@@ -460,7 +533,7 @@ defmodule Indexed.Managed do
   @spec do_manage_path(state, atom, add_or_rm, [record], keyword) :: state
   defp do_manage_path(state, name, action, records, path) do
     Enum.reduce(path, state, fn {path_entry, sub_path}, acc ->
-      log({path_entry, sub_path}, label: "do_manage_path path")
+      log({path_entry, sub_path}, label: "do_manage_path path (#{action})")
       %{children: children} = get_managed(acc.module, name)
       spec = Map.fetch!(children, path_entry)
 
@@ -476,9 +549,9 @@ defmodule Indexed.Managed do
     assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey}, label: "** ONE add")
-    log(records, label: "records")
-    if Process.get(:bb), do: IO.inspect(state.tracking, label: "trkk")
-    if Process.get(:bb), do: IO.inspect(state.tmp.tracking, label: "trkk tmp")
+    log(Enum.map(records, & &1.id), label: "records")
+    log(state.tracking, label: "trkk")
+    log(state.tmp.tracking, label: "trkk tmp")
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
@@ -495,8 +568,6 @@ defmodule Indexed.Managed do
         end
       end)
 
-    if Process.get(:bb), do: IO.inspect(state.tmp.tracking, label: "DONE tmp")
-
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
 
@@ -508,7 +579,7 @@ defmodule Indexed.Managed do
     %{module: assoc_mod} = assoc_managed = get_managed(state.module, assoc_name)
 
     log({name, path_entry, assoc_mod, fkey}, label: "** MANY add")
-    log(records, label: "records")
+    log(Enum.map(records, & &1.id), label: "records")
 
     {assoc_records, ids} =
       Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_ids} ->
@@ -540,7 +611,7 @@ defmodule Indexed.Managed do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey, sub_path}, label: "** ONE rm")
-    log(records, label: "records")
+    log(Enum.map(records, & &1.id), label: "records")
     # ONE rm: {:comments, :author, :users, :author_id}
 
     {state, assoc_records} =
@@ -561,7 +632,8 @@ defmodule Indexed.Managed do
   # *** MANY RM - these records have a `has_many :assoc_name` association.
   defp do_manage_assoc(state, name, path_entry, spec, :rm, records, sub_path)
        when :many == elem(spec, 0) do
-    log({name, path_entry, spec}, label: "** MANY add")
+    log({name, path_entry, spec}, label: "** MANY rm")
+    log(Enum.map(records, & &1.id), label: "records")
 
     {:many, assoc_name, fkey, _} = normalize_spec(spec)
     %{id_key: id_key, module: module} = get_managed(state.module, name)
@@ -589,7 +661,7 @@ defmodule Indexed.Managed do
     #   &rm(&2 {name, nil, path_entry, id(assoc_id_key, &1)}, assoc_managed, &1),
     # )
 
-    do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
+    do_manage_path(state, assoc_name, :rm, assoc_records, sub_path)
   end
 
   # Get the foreign key for the `path_entry` field of `module`.
@@ -665,76 +737,6 @@ defmodule Indexed.Managed do
       %{^path_entry => %{} = assoc} -> assoc
       _ -> nil
     end
-  end
-
-  @doc """
-  Add, remove or update a managed record or list of them.
-
-  The `name` entity should be declared as `managed`.
-
-  If `state` is a map, wrapping the managed state under a `:managed` key, it
-  will be used as appropriate and returned re-wrapped.
-  """
-  @spec manage(
-          state_or_wrapped,
-          managed_or_name,
-          :insert | :update | record_or_list,
-          record_or_list,
-          path
-        ) ::
-          state_or_wrapped
-  def manage(state, mon, orig, new, path \\ nil)
-
-  def manage(%{managed: managed_state} = state, mon, orig, new, path) do
-    %{state | managed: manage(managed_state, mon, orig, new, path)}
-  end
-
-  def manage(state, mon, orig, new, path) do
-    # new = if new && setup, do: setup.(new), else: new
-
-    to_list = fn
-      nil -> []
-      i when is_map(i) -> [i]
-      i -> i
-    end
-
-    %{name: name, default_path: default_path} =
-      managed =
-      case mon do
-        %{} -> mon
-        name -> get_managed(state, name)
-      end
-
-    orig =
-      case orig do
-        :insert -> nil
-        :update -> %{} = get(state, name, new.id)
-        og -> og
-      end
-
-    path =
-      case path do
-        nil -> default_path
-        p -> normalize_preload(p)
-      end
-
-    new_records = to_list.(new)
-    orig_records = to_list.(orig)
-    # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
-
-    l = &length/1
-    log("MANAGE: #{name}: #{l.(orig_records)} to #{l.(new_records)}")
-
-    manage_top = &Enum.reduce(&2, &1, &3)
-    manage_path = &do_manage_path(&1, name, &3, &2, path)
-
-    state
-    |> State.init_tmp()
-    |> manage_top.(orig_records, &rm(&2, {:top, name}, managed, &1))
-    |> manage_path.(orig_records, :rm)
-    |> manage_top.(new_records, &add(&2, {:top, name}, managed, &1))
-    |> manage_path.(new_records, :add)
-    |> do_manage_finish()
   end
 
   @doc "Define a managed entity."

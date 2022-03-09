@@ -86,11 +86,12 @@ defmodule BlogServer do
   end
 
   def handle_call({:update_post, post_id, params}, _from, state) do
-      Process.put :bb, :bb
-    with %{} = post <- get(state, :posts, post_id, comments: :author),
+    path = [:author, comments: :author]
+
+    with %{} = post <- get(state, :posts, post_id, path),
          %{valid?: true} = cs <- Post.changeset(post, params),
          {:ok, new_post} = ok <- Repo.update(cs) do
-      {:reply, ok, manage(state, :posts, post, new_post, comments: :author)}
+      {:reply, ok, manage(state, :posts, post, new_post, path)}
     else
       {:error, _cs} = err -> {:reply, err, state}
       _ -> {:reply, :error, state}

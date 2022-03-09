@@ -39,7 +39,6 @@ defmodule Indexed.Actions.Put do
     }
 
     id = id_value(put)
-
     put = %{put | previous: Indexed.get(index, entity_name, id)}
 
     Logger.debug("Putting into #{entity_name}: id #{id}")

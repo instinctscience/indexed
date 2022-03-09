@@ -122,9 +122,10 @@ defmodule Indexed.ManagedTest do
 
   test "update many assoc: of 2, update 1 and delete 1" do
     %{bs_pid: _bs_pid, ids: %{jill: jill_id}} = basic_setup()
+    entry = fn -> Enum.find(entries(), &String.contains?(&1.content, "best")) end
 
-    %{id: post_id, content: "My post" <> _, comments: [%{id: c1_id, content: "woah"}, %{content: "wow"}]} =
-      Enum.find(entries() |> IO.inspect(label: "entries"), &String.contains?(&1.content, "best"))
+    %{id: post_id, content: "My" <> _, comments: [%{id: c1_id, content: "woah"}, %{content: "wow"}]} =
+      entry.()
 
     assert {:ok,
             %{content: "plenty best", comments: [%{id: ^c1_id, content: "woah indeed"}]}} =
@@ -136,9 +137,7 @@ defmodule Indexed.ManagedTest do
     msg = "user-#{jill_id}"
     assert_receive [:unsubscribe, ^msg]
 
-    # {:ok, _} = Blog.update_comment(comment_id, msg)
-
-    # %{content: ^msg} = entries() |> hd() |> Map.fetch!(:comments) |> hd()
+    %{id: ^post_id, comments: [%{id: ^c1_id, content: "woah indeed"}]} = entry.()
   end
 
   @tag :skip

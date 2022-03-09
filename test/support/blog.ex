@@ -22,7 +22,6 @@ defmodule Blog do
   end
 
   def unsubscribe(topic) do
-    IO.inspect(topic, label: "hi")
     maybe_send([:unsubscribe, topic])
     Phoenix.PubSub.unsubscribe(@pubsub, topic)
   end
