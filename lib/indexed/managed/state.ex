@@ -1,6 +1,5 @@
 defmodule Indexed.Managed.State do
   @moduledoc "A piece of GenServer state for Managed."
-  alias Indexed.Managed
   alias __MODULE__
   defstruct [:index, :module, :repo, :tmp, :tracking]
 
@@ -20,11 +19,11 @@ defmodule Indexed.Managed.State do
     copied from State and manipulated as needed within this structure.
   """
   @type tmp :: %{
-          keep: %{atom => [Indexed.id()]},
-          records: %{atom => %{Indexed.id() => Indexed.record()}},
-          rm_ids: %{atom => %{Indexed.id() => %{atom => [Indexed.id()]}}},
-          top_rm_ids: %{atom => [Indexed.id()]},
-          tracking: Managed.tracking()
+          keep: %{atom => [id]},
+          records: %{atom => %{id => record}},
+          rm_ids: %{atom => %{id => %{atom => [id]}}},
+          top_rm_ids: %{atom => [id]},
+          tracking: tracking
         }
 
   @typedoc """
@@ -34,8 +33,24 @@ defmodule Indexed.Managed.State do
           module: module,
           repo: module,
           tmp: tmp | nil,
-          tracking: Managed.tracking()
+          tracking: tracking
         }
+
+  @typedoc """
+  A set of tracked entity statuses.
+
+  An entity is tracked if another entity refers to it with a :one relationship.
+  """
+  @type tracking :: %{atom => tracking_status}
+
+  @typedoc """
+  Map of tracked record ids to occurrences throughout the records held.
+  Used to manage subscriptions.
+  """
+  @type tracking_status :: %{id => non_neg_integer}
+
+  @typep id :: Indexed.id()
+  @typep record :: Indexed.record()
 
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
   @spec init(module, module) :: t

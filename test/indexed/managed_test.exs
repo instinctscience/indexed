@@ -124,11 +124,13 @@ defmodule Indexed.ManagedTest do
     %{bs_pid: _bs_pid, ids: %{jill: jill_id}} = basic_setup()
     entry = fn -> Enum.find(entries(), &String.contains?(&1.content, "best")) end
 
-    %{id: post_id, content: "My" <> _, comments: [%{id: c1_id, content: "woah"}, %{content: "wow"}]} =
-      entry.()
+    %{
+      id: post_id,
+      content: "My" <> _,
+      comments: [%{id: c1_id, content: "woah"}, %{content: "wow"}]
+    } = entry.()
 
-    assert {:ok,
-            %{content: "plenty best", comments: [%{id: ^c1_id, content: "woah indeed"}]}} =
+    assert {:ok, %{content: "plenty best", comments: [%{id: ^c1_id, content: "woah indeed"}]}} =
              Blog.update_post(post_id,
                content: "plenty best",
                comments: [%{id: c1_id, content: "woah indeed"}]

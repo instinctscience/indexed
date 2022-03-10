@@ -37,8 +37,6 @@ defmodule Indexed.Managed do
     virtual fields. Invoked by `manage/4` when the association is needed.
   * `:id_key` - Field name atom which carries the id to index with or a
     function which accepts a record and returns the id to use. Default `:id`.
-  * `:setup` - Function which takes and returns the record when `manage/4`
-    begins. Useful for custom preparation steps.
   * `:subscribe` and `:unsubscribe` - Functions which take a record's ID and
     manage the subscription. These must both be declared or neither.
 
@@ -63,16 +61,13 @@ defmodule Indexed.Managed do
 
   defstruct [
     :children,
-    :children_getters,
     :default_path,
     :fields,
-    :foreign_many_refs,
     :id_key,
     :query_fn,
     :module,
     :name,
     :prefilters,
-    :setup,
     :tracked,
     :subscribe,
     :unsubscribe
@@ -82,37 +77,35 @@ defmodule Indexed.Managed do
   * `:children` - Map with assoc field name keys `t:assoc_spec/0` values.
     When this entity is managed, all children will also be managed and so on,
     recursively.
-  * `:id_key` - Field name atom which carries the id to index with or a
-    function which accepts a record and returns the id to use. Default `:id`.
+  * `:default_path` - Default associations to traverse for `manage/5`.
+  * `:fields` - Used to build the index. See `Managed.Entity.t/0`.
+  * `:id_key` - Used to get a record id. See `Managed.Entity.t/0`.
   * `:query_fn` - Optional function which takes a queryable and returns a
     queryable. This allows for extra query logic to be added such as populating
     virtual fields. Invoked by `manage/4` when the association is needed.
   * `:module` - The struct module which will be used for the records.
   * `:name` - Atom name of the managed entity.
-  * `:setup` - Function which takes and returns the record when `manage/4`
-    begins. Useful for custom preparation steps.
+  * `:prefilters` - Used to build the index. See `Managed.Entity.t/0`.
   * `:subscribe` - 1-arity function which subscribes to changes by id.
+  * `:tracked` - True if another entity has a :one assoc to this. Internal.
   * `:unsubscribe` - 1-arity function which unsubscribes to changes by id.
   """
   @type t :: %Managed{
           children: %{atom => assoc_spec},
-          children_getters: %{atom => {module, atom}},
           default_path: path,
           fields: [atom | Indexed.Entity.field()],
-          foreign_many_refs: keyword({atom, atom}),
           id_key: id_key,
           query_fn: (Ecto.Queryable.t() -> Ecto.Queryable.t()) | nil,
           module: module,
           name: atom,
           prefilters: [atom | keyword] | nil,
-          setup: (map -> map) | nil,
           subscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil,
           tracked: boolean,
           unsubscribe: (Ecto.UUID.t() -> :ok | {:error, any}) | nil
         }
 
   @typedoc "For convenience, state is also accepted within a wrapping map."
-  @type state_or_wrapped :: map
+  @type state_or_wrapped :: %{:managed => state, optional(any) => any} | state
 
   @typedoc """
   A preload spec which is used to build the preload function. This function
@@ -138,19 +131,6 @@ defmodule Indexed.Managed do
           | {:many, entity_name :: atom, pf_key :: atom | nil, order_hint}
           | {:repo, assoc_field :: atom, managed :: t}
 
-  @typedoc """
-  A set of tracked entity statuses.
-
-  An entity is tracked if another entity refers to it with a :one relationship.
-  """
-  @type tracking :: %{atom => tracking_status}
-
-  @typedoc """
-  Map of tracked record ids to occurrences throughout the records held.
-  Used to manage subscriptions.
-  """
-  @type tracking_status :: %{id => non_neg_integer}
-
   @type data_opt :: Warm.data_opt()
 
   # Path to follow when warming or updating data. Uses same format as preload.
@@ -167,6 +147,7 @@ defmodule Indexed.Managed do
   @typep preload :: atom | list
 
   # Used to explain the parent entity when processing its has_many relationship.
+  # Either {:top, name} where name is the top-level entity name OR
   # 1. Parent entity name.
   # 2. ID of the parent.
   # 3. Field name which would have the list of children if loaded.
@@ -271,8 +252,6 @@ defmodule Indexed.Managed do
   end
 
   def manage(state, mon, orig, new, path) do
-    # new = if new && setup, do: setup.(new), else: new
-
     to_list = fn
       nil -> []
       i when is_map(i) -> [i]
@@ -301,7 +280,6 @@ defmodule Indexed.Managed do
 
     new_records = to_list.(new)
     orig_records = to_list.(orig)
-    # log("MANAGE #{orig_records && orig.__struct__} -> #{new && new.__struct__}...")
 
     l = &length/1
     log("MANAGE: #{name}: #{l.(orig_records)} to #{l.(new_records)}")
@@ -337,19 +315,14 @@ defmodule Indexed.Managed do
         put(st, name, get_tmp_record.(name, id))
         put_tracking.(st, name, id, new_c)
 
-      # Now have 0 references.
       # Had 1+ references, now have 0.
-      # st, name, id, orig_c, new_c when orig_c > 0 and new_c == 0 ->
       st, name, id, orig_c, 0 ->
         log({name, id, orig_c, 0}, label: "had some, now have 0")
 
         log(st.tmp.keep, label: "keeps #{name}")
-        # unless id in Map.get(st.tmp.keep, name, []),
-        #   do: drop(st, name, id)
-        # unless id in Map.get(st.tmp.keep, name, []) do
+
         unless has_referring_many?(state, name, id) do
           log(label: "dropping #{name} #{id}")
-          maybe_unsubscribe(mod, name, id)
           drop(st, name, id)
         end
 
@@ -361,7 +334,7 @@ defmodule Indexed.Managed do
         log({name, "id #{id}", orig_c, new_c}, label: "had 1+ still have 1+")
         log(state.tmp.tracking, label: "TMP")
         log(state.tracking, label: "TRK")
-        tmp_rec = get_tmp_record.(name, id) |> log(label: "tmprec")
+        tmp_rec = get_tmp_record.(name, id)
         if tmp_rec, do: put(st, name, tmp_rec)
         put_tracking.(st, name, id, new_c)
     end
@@ -413,12 +386,6 @@ defmodule Indexed.Managed do
   # - If not tracked, just add to the index.
   # - If tracked, add record to tmp and also update tmp tracking data.
   @spec add(state, parent_info, t, record) :: state
-  # defp add(state, %{name: name, tracked: false}, record) do
-  #   log("ADD not tracked: #{name}: #{inspect(record)}")
-  #   put(state, name, drop_associations(record))
-  #   state
-  # end
-
   defp add(state, parent_info, %{id_key: id_key, name: name}, record) do
     id = id(id_key, record)
     record = drop_associations(record)
@@ -441,38 +408,15 @@ defmodule Indexed.Managed do
     end
   end
 
-  # Remove a record according to its managed config:
-  # - If not tracked, just remove it from the index.
-  # - If tracked, also update tmp tracking data.
-  # if parent has a :many relationship to this assoc being rm'd, `parent_info` is given.
   @spec rm(state, parent_info, t, record) :: state
-  # defp rm(state, parent_info \\ nil, managed, record)
-
-  # defp rm(state, _parent_info, %{id_key: id_key, name: name, tracked: false}, record) do
-  #   log("RM not tracked: #{name}: id #{id(id_key, record)}")
-  #   drop(state, name, id(id_key, record))
-  #   state
-  # end
-
   defp rm(state, parent_info, %{id_key: id_key, name: name}, record) do
-    # fun = fn {assoc_name, fkey} ->
-    #   assoc_id = Map.fetch!(record, fkey)
-    #   is_map(get(state, assoc_name, assoc_id))
-    # end
-
     id = id(id_key, record)
     cur = tmp_tracking(state, name, id)
-    put = &put_tmp_tracking(state, name, id, &1)
 
     case {cur, parent_info} do
       {_, {:top, ^name}} ->
         log("RM TOP (#{name}) #{id}")
         put_tmp_rm_id(state, {:top, name}, id)
-
-      # {_, nil} ->
-      #   log("RM: #{name}: #{id}: parent_inf")
-      #   put_tmp_rm_id(state, {:top, name}, id)
-      #   # update_in(state, [Access.key(:tmp), :top_rm_ids, name], &[id | &1 || []])
 
       {_, {_, _, _} = parent_info} ->
         log("RM (#{name}) #{id}: parent_info #{inspect(parent_info)}")
@@ -480,23 +424,7 @@ defmodule Indexed.Managed do
 
       {cur, _} when cur > 0 ->
         log("RM (#{name}) #{id}: new tracking #{cur - 1}")
-        put.(cur - 1)
-
-      # Enum.any?(fmrs, fun) ->
-      #   # 0 refs is ok because another entity still `has_many` to this.
-      #   # if skip_keep?,
-      #   #   do: state,
-      #   #   else: update_in(state, [tmp, :keep, name], &[id | &1])
-      #   if skip_keep? do
-      #     log(record, label: "skip keep!")
-      #     state
-      #   else
-      #     log(record, label: "not skip keep")
-      #     update_in(state, [tmp, :keep, name], &[id | &1])
-      #   end
-
-      _ ->
-        raise "Couldn't remove reference for #{name}: already at 0."
+        put_tmp_tracking(state, name, id, cur - 1)
     end
   end
 
@@ -549,7 +477,7 @@ defmodule Indexed.Managed do
     assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey}, label: "** ONE add")
-    log(Enum.map(records, & &1.id), label: "records")
+    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
     log(state.tracking, label: "trkk")
     log(state.tmp.tracking, label: "trkk tmp")
 
@@ -579,7 +507,7 @@ defmodule Indexed.Managed do
     %{module: assoc_mod} = assoc_managed = get_managed(state.module, assoc_name)
 
     log({name, path_entry, assoc_mod, fkey}, label: "** MANY add")
-    log(Enum.map(records, & &1.id), label: "records")
+    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
 
     {assoc_records, ids} =
       Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_ids} ->
@@ -611,7 +539,7 @@ defmodule Indexed.Managed do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey, sub_path}, label: "** ONE rm")
-    log(Enum.map(records, & &1.id), label: "records")
+    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
     # ONE rm: {:comments, :author, :users, :author_id}
 
     {state, assoc_records} =
@@ -632,13 +560,13 @@ defmodule Indexed.Managed do
   # *** MANY RM - these records have a `has_many :assoc_name` association.
   defp do_manage_assoc(state, name, path_entry, spec, :rm, records, sub_path)
        when :many == elem(spec, 0) do
-    log({name, path_entry, spec}, label: "** MANY rm")
-    log(Enum.map(records, & &1.id), label: "records")
-
     {:many, assoc_name, fkey, _} = normalize_spec(spec)
     %{id_key: id_key, module: module} = get_managed(state.module, name)
     assoc_managed = get_managed(state.module, assoc_name)
     fkey = fkey || get_fkey(module, path_entry)
+
+    log({name, path_entry, spec}, label: "** MANY rm")
+    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
@@ -649,17 +577,6 @@ defmodule Indexed.Managed do
 
         {acc_state, assoc_records ++ acc_assoc_records}
       end)
-
-    # Enum.reduce(records, [], fn record, acc ->
-    #   acc ++ get_records(state, assoc_name, {fkey, id(id_key, record)})
-    # end)
-
-    # Enum.each(assoc_records, &drop(state, assoc_name, id(assoc_id_key, &1)))
-    # Enum.reduce(
-    #   assoc_records,
-    #   state,
-    #   &rm(&2 {name, nil, path_entry, id(assoc_id_key, &1)}, assoc_managed, &1),
-    # )
 
     do_manage_path(state, assoc_name, :rm, assoc_records, sub_path)
   end
@@ -710,7 +627,8 @@ defmodule Indexed.Managed do
 
   # Update tmp tracking. If a function is given, its return value will be used.
   # As input, the fun gets the current count, using non-tmp tracking if empty.
-  @spec put_tmp_tracking(t, atom, id, non_neg_integer | (non_neg_integer -> non_neg_integer)) :: t
+  @spec put_tmp_tracking(state, atom, id, non_neg_integer | (non_neg_integer -> non_neg_integer)) ::
+          state
   defp put_tmp_tracking(state, name, id, num_or_fun) when is_function(num_or_fun) do
     update_in(state, [Access.key(:tmp), :tracking, name, id], fn
       nil ->
@@ -756,16 +674,13 @@ defmodule Indexed.Managed do
 
       @managed_setup %Managed{
         children: Map.new(children),
-        children_getters: Map.new(unquote(opts[:children_getters] || [])),
         default_path: default_path,
         fields: unquote(opts[:fields]),
-        foreign_many_refs: [],
         query_fn: unquote(opts[:query_fn]),
         id_key: unquote(opts[:id_key] || :id),
         module: unquote(module),
         name: unquote(name),
         prefilters: unquote(opts[:prefilters]),
-        setup: unquote(opts[:setup]),
         subscribe: unquote(opts[:subscribe]),
         tracked: false,
         unsubscribe: unquote(opts[:unsubscribe])
@@ -814,7 +729,6 @@ defmodule Indexed.Managed do
 
   * Set the `:tracked` option on the managed structs where another references it
     with a `:one` association.
-  * Set `:foreign_many_refs` to list other entities with has_many references.
   """
   @spec rewrite_managed([t]) :: [t]
   def rewrite_managed(manageds) do
@@ -822,15 +736,10 @@ defmodule Indexed.Managed do
       Enum.map(list, &if(&1.name == entity, do: fun.(&1), else: &1))
     end
 
-    Enum.reduce(manageds, manageds, fn %{children: children, name: name}, acc ->
+    Enum.reduce(manageds, manageds, fn %{children: children}, acc ->
       Enum.reduce(children, acc, fn
         {_key, {:one, entity, _fkey}}, acc2 ->
           put.(acc2, entity, &Map.put(&1, :tracked, true))
-
-        {_key, spec}, acc2 when :many == elem(spec, 0) ->
-          put.(acc2, elem(spec, 1), fn %{foreign_many_refs: fmrs} = m ->
-            %{m | foreign_many_refs: [{name, elem(spec, 2)} | fmrs]}
-          end)
 
         _, acc2 ->
           acc2
