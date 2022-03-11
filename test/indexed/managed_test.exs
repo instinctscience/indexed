@@ -142,14 +142,19 @@ defmodule Indexed.ManagedTest do
     %{id: ^post_id, comments: [%{id: ^c1_id, content: "woah indeed"}]} = entry.()
   end
 
-  @tag :skip
   test "only :one assoc updated" do
     {:ok, bob} = Blog.create_user("bob", ["pin"])
-
     Repo.insert!(%Post{author_id: bob.id, content: "Hello World"})
+    entry = fn -> Enum.find(entries(), &String.contains?(&1.content, "Hello")) end
+    start_supervised!(BlogServer.child_spec())
 
-    start_supervised!(BlogServer.child_spec(feedback_pid: self()))
+    assert %{content: "Hello World", author: %{name: "bob"}} = entry.()
+    assert {:ok, _} = Blog.update_user(bob, %{name: "not bob"})
+    assert %{content: "Hello World", author: %{name: "not bob"}} = entry.()
+  end
 
-    {:ok, _} = Blog.update_user(bob, %{name: "not bob"})
+  @tag :skip
+  test "records further than path get auto-deleted" do
+    # see managed.ex line 308
   end
 end
