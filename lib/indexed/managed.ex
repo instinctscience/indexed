@@ -51,7 +51,7 @@ defmodule Indexed.Managed do
         import Ecto.Query, except: [preload: 2, preload: 3]
       end
   """
-  import Ecto.Query
+  import Ecto.Query, except: [preload: 3]
   import Indexed.Helpers, only: [normalize_preload: 1]
   alias Ecto.Association.NotLoaded
   alias Indexed.{Entity, View}
@@ -146,7 +146,7 @@ defmodule Indexed.Managed do
   @typep record :: Indexed.record()
   @typep record_or_list :: [record] | record | nil
   @typep managed_or_name :: t | atom
-  @typep preload :: atom | list
+  @typep preloads :: atom | list
 
   # Used to explain the parent entity when processing its has_many relationship.
   # Either {:top, name} where name is the top-level entity name OR
@@ -855,17 +855,17 @@ defmodule Indexed.Managed do
 
   If `preload` is `true`, use the entity's default path.
   """
-  @spec get(state_or_wrapped, atom, id, preload | true) :: any
+  @spec get(state_or_wrapped, atom, id, preloads | true) :: any
   def get(state, name, id, preload \\ nil)
 
   def get(%{managed: managed_state}, name, id, preload) do
     get(managed_state, name, id, preload)
   end
 
-  def get(%{index: index, module: mod} = state, name, id, preload) do
-    preload = if true == preload, do: mod.__managed__(name).default_path, else: preload
+  def get(%{index: index, module: mod} = state, name, id, preloads) do
+    p = if true == preloads, do: mod.__managed__(name).default_path, else: preloads
     record = Indexed.get(index, name, id)
-    if preload, do: Managed.preload(record, state, preload), else: record
+    if p, do: preload(record, state, p), else: record
   end
 
   @doc "Invoke `Indexed.put/3` with a wrapped state for convenience."
@@ -1034,33 +1034,18 @@ defmodule Indexed.Managed do
   def preload_fn(_, _), do: nil
 
   @doc "Preload associations recursively."
-  @spec preload(map | [map] | nil, state_or_wrapped, preload) :: [map] | map | nil
-  def preload(record_or_list, %{managed: managed}, preload) do
-    Managed.preload(record_or_list, managed, preload)
+  @spec preload(map | [map] | nil, state_or_wrapped, preloads) :: [map] | map | nil
+  def preload(nil, _, _), do: nil
+
+  def preload(record_or_list, %{managed: managed}, preloads) do
+    preload(record_or_list, managed, preloads)
   end
 
-  def preload(record_or_list, state, preload) do
-    resolve(record_or_list, state, preload: preload)
+  def preload(record_or_list, state, preloads) when is_list(record_or_list) do
+    Enum.map(record_or_list, &preload(&1, state, preloads))
   end
 
-  # Prepare some data.
-  #
-  # ## Options
-  #
-  # * `:preload` - Which data to preload. eg. `[:author, comments: :author]`
-  @spec resolve(map | [map] | nil, state_or_wrapped, keyword | map) :: [map] | map | nil
-  defp resolve(record_or_list, state, opts)
-  defp resolve(nil, _, _), do: nil
-
-  defp resolve(record_or_list, %{managed: state}, opts) do
-    resolve(record_or_list, state, opts)
-  end
-
-  defp resolve(record_or_list, state, opts) when is_list(record_or_list) do
-    Enum.map(record_or_list, &resolve(&1, state, opts))
-  end
-
-  defp resolve(record_or_list, %{module: mod} = state, opts) do
+  def preload(record_or_list, %{module: mod} = state, preloads) do
     record = record_or_list
 
     preload = fn
@@ -1081,9 +1066,9 @@ defmodule Indexed.Managed do
       pl -> [pl]
     end
 
-    Enum.reduce(listify.(opts[:preload]), record, fn
+    Enum.reduce(listify.(preloads), record, fn
       {key, sub_pl}, acc ->
-        preloaded = acc |> preload.(key) |> resolve(state, preload: listify.(sub_pl))
+        preloaded = acc |> preload.(key) |> preload(state, listify.(sub_pl))
         Map.put(acc, key, preloaded)
 
       key, acc ->
