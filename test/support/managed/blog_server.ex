@@ -11,17 +11,14 @@ defmodule BlogServer do
 
   managed :comments, Comment,
     children: [:author, :post, :replies],
-    fields: [:inserted_at],
-    prefilters: [:post_id]
+    fields: [:inserted_at]
 
   managed :users, User,
     children: [:flare_pieces],
     subscribe: &Blog.subscribe_to_user/1,
     unsubscribe: &Blog.unsubscribe_from_user/1
 
-  managed :flare_pieces, FlarePiece,
-    fields: [:name],
-    prefilters: [:user_id]
+  managed :flare_pieces, FlarePiece, fields: [:name]
 
   # These basically exist so comments can have a :one and a :many ref.
   # When `:this_blog` is false, don't keep them in the cache.

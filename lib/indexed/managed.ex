@@ -54,9 +54,9 @@ defmodule Indexed.Managed do
   import Ecto.Query
   import Indexed.Helpers, only: [normalize_preload: 1]
   alias Ecto.Association.NotLoaded
+  alias Indexed.{Entity, View}
   alias Indexed.Actions.Warm
   alias Indexed.Managed.State
-  alias Indexed.View
   alias __MODULE__
 
   defstruct [
@@ -91,9 +91,9 @@ defmodule Indexed.Managed do
   * `:unsubscribe` - 1-arity function which unsubscribes to changes by id.
   """
   @type t :: %Managed{
-          children: %{atom => assoc_spec},
+          children: children,
           default_path: path,
-          fields: [atom | Indexed.Entity.field()],
+          fields: [atom | Entity.field()],
           id_key: id_key,
           query_fn: (Ecto.Queryable.t() -> Ecto.Queryable.t()) | nil,
           module: module,
@@ -107,10 +107,12 @@ defmodule Indexed.Managed do
   @typedoc "For convenience, state is also accepted within a wrapping map."
   @type state_or_wrapped :: %{:managed => state, optional(any) => any} | state
 
+  @typedoc "A map of field names to assoc specs."
+  @type children :: %{atom => assoc_spec}
+
   @typedoc """
-  A preload spec which is used to build the preload function. This function
-  receives the record and the state and must return the preloaded value.
-  (Note that the record is only used for reference -- it is not returned.)
+  An association spec defines an association to another entity.
+  It is used to build the preload function among other things.
 
   * `{:one, entity_name, id_key}` - Preload function should get a record of
     `entity_name` with id matching the id found under `id_key` of the record.
@@ -674,7 +676,7 @@ defmodule Indexed.Managed do
         id_key: unquote(opts[:id_key] || :id),
         module: unquote(module),
         name: unquote(name),
-        prefilters: unquote(opts[:prefilters]),
+        prefilters: unquote(opts[:prefilters] || []),
         subscribe: unquote(opts[:subscribe]),
         tracked: false,
         unsubscribe: unquote(opts[:unsubscribe])
@@ -731,58 +733,82 @@ defmodule Indexed.Managed do
   """
   @spec rewrite_managed([t]) :: [t]
   def rewrite_managed(manageds) do
-    put = fn list, entity, fun ->
-      Enum.map(list, &if(&1.name == entity, do: fun.(&1), else: &1))
+    put_fn = fn k, fun -> &%{&1 | k => fun.(&1)} end
+
+    map_put = fn mgs, k, fun ->
+      Enum.map(mgs, put_fn.(k, &fun.(&1, mgs)))
     end
 
-    manageds =
-      manageds
-      |> Enum.map(&do_rewrite_children(&1, manageds))
-      |> Enum.map(&do_rewrite_fields/1)
-
-    Enum.reduce(manageds, manageds, fn %{children: children}, acc ->
-      Enum.reduce(children, acc, fn
-        {_key, {:one, entity, _fkey}}, acc2 ->
-          put.(acc2, entity, &Map.put(&1, :tracked, true))
-
-        _, acc2 ->
-          acc2
-      end)
-    end)
+    manageds
+    |> map_put.(:children, &do_rewrite_children/2)
+    |> map_put.(:prefilters, &do_rewrite_prefilters/2)
+    |> map_put.(:fields, &do_rewrite_fields/2)
+    |> map_put.(:tracked, &do_rewrite_tracked/2)
   end
 
   # Normalize child association specs. Takes managed to update and list of all.
-  @spec do_rewrite_children(t, [t]) :: t
-  defp do_rewrite_children(%{module: mod} = managed, manageds) do
-    Map.update!(managed, :children, fn children ->
-      Map.new(children, fn
-        k when is_atom(k) ->
-          case mod.__schema__(:association, k) do
-            %{cardinality: :one} = a ->
-              {k, {:one, entity_by_module(manageds, a.related), a.owner_key}}
+  @spec do_rewrite_children(t, [t]) :: children
+  defp do_rewrite_children(%{children: children, module: mod}, manageds) do
+    Map.new(children, fn
+      k when is_atom(k) ->
+        case mod.__schema__(:association, k) do
+          %{cardinality: :one} = a ->
+            {k, {:one, entity_by_module(manageds, a.related), a.owner_key}}
 
-            %{cardinality: :many} = a ->
-              {k, {:many, entity_by_module(manageds, a.related), a.related_key, nil}}
-          end
+          %{cardinality: :many} = a ->
+            {k, {:many, entity_by_module(manageds, a.related), a.related_key, nil}}
+        end
 
-        {k, spec} when :many == elem(spec, 0) ->
-          {k, normalize_spec(spec)}
+      {k, spec} when :many == elem(spec, 0) ->
+        {k, normalize_spec(spec)}
 
-        other ->
-          other
-      end)
+      other ->
+        other
     end)
   end
 
+  # Auto-add prefilters needed for foreign many assocs to operate.
+  # For instance, :comments would need :post_id prefilter
+  # because :posts has :many comments.
+  @spec do_rewrite_prefilters(t, [t]) :: [atom | Entity.prefilter_config()]
+  defp do_rewrite_prefilters(%{prefilters: prefilters, name: name}, manageds) do
+    finish = fn required ->
+      Enum.uniq_by(
+        Indexed.Actions.Warm.resolve_prefilters_opt(required ++ prefilters),
+        &elem(&1, 0)
+      )
+    end
+
+    manageds
+    |> Enum.reduce([], fn %{children: children}, acc ->
+      Enum.reduce(children, [], fn
+        {_k, {:many, ^name, pf_key, _}}, acc2 -> [pf_key | acc2]
+        _, acc2 -> acc2
+      end) ++ acc
+    end)
+    |> case do
+      [] -> prefilters
+      required -> finish.(required)
+    end
+  end
+
   # If :fields is empty, use the id key or the first field given by Ecto.
-  @spec do_rewrite_fields(t) :: t
-  defp do_rewrite_fields(%{fields: [], id_key: id_key} = m) when is_atom(id_key),
-    do: %{m | fields: [id_key]}
+  @spec do_rewrite_fields(t, [t]) :: [atom | Entity.field()]
+  defp do_rewrite_fields(%{fields: [], id_key: id_key}, _) when is_atom(id_key),
+    do: [id_key]
 
-  defp do_rewrite_fields(%{fields: [], module: mod} = m),
-    do: %{m | fields: [hd(mod.__schema__(:fields))]}
+  defp do_rewrite_fields(%{fields: [], module: mod}, _),
+    do: [hd(mod.__schema__(:fields))]
 
-  defp do_rewrite_fields(m), do: m
+  defp do_rewrite_fields(%{fields: fields}, _), do: fields
+
+  # Return true for tracked if another entity has a :one association to us.
+  @spec do_rewrite_tracked(t, [t]) :: boolean
+  defp do_rewrite_tracked(%{name: name}, manageds) do
+    Enum.any?(manageds, fn m ->
+      Enum.any?(m.children, &match?({:one, ^name, _}, elem(&1, 1)))
+    end)
+  end
 
   # Find the entity name in manageds using the given schema module.
   @spec entity_by_module([t], module) :: atom
