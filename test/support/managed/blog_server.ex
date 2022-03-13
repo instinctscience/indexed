@@ -5,38 +5,26 @@ defmodule BlogServer do
   alias Indexed.Test.Repo
 
   managed :posts, Post,
-    fields: [:inserted_at],
-    children: [
-      author: {:one, :users, :author_id},
-      comments: {:many, :comments, :post_id}
-    ]
+    children: [:author, :comments],
+    default_path: [:author, comments: :author],
+    fields: [:inserted_at]
 
   managed :comments, Comment,
+    children: [:author, :post, :replies],
     fields: [:inserted_at],
-    prefilters: [:post_id],
-    children: [
-      author: {:one, :users, :author_id},
-      post: {:one, :posts, :post_id},
-      replies: {:many, :replies, :comment_id}
-    ]
+    prefilters: [:post_id]
 
   managed :users, User,
+    children: [:flare_pieces],
     fields: [:name],
     subscribe: &Blog.subscribe_to_user/1,
-    unsubscribe: &Blog.unsubscribe_from_user/1,
-    children: [
-      flare_pieces: {:many, :flare_pieces, :user_id}
-    ]
+    unsubscribe: &Blog.unsubscribe_from_user/1
 
-  managed :flare_pieces, FlarePiece,
-    fields: [:name],
-    prefilters: [:user_id]
+  managed :flare_pieces, FlarePiece, fields: [:name], prefilters: [:user_id]
 
   # These basically exist so comments can have a :one and a :many ref.
   # When `:this_blog` is false, don't keep them in the cache.
-  managed :replies, Reply,
-    fields: [:id],
-    children: [comment: {:one, :comments, :comment_id}]
+  managed :replies, Reply, children: [:comment], fields: [:id]
 
   def call(msg), do: GenServer.call(__MODULE__, msg)
   def run(fun), do: call({:run, fun})
@@ -86,12 +74,10 @@ defmodule BlogServer do
   end
 
   def handle_call({:update_post, post_id, params}, _from, state) do
-    path = [:author, comments: :author]
-
-    with %{} = post <- get(state, :posts, post_id, path),
+    with %{} = post <- get(state, :posts, post_id, true),
          %{valid?: true} = cs <- Post.changeset(post, params),
          {:ok, new_post} = ok <- Repo.update(cs) do
-      {:reply, ok, manage(state, :posts, post, new_post, path)}
+      {:reply, ok, manage(state, :posts, post, new_post)}
     else
       {:error, _cs} = err -> {:reply, err, state}
       _ -> {:reply, :error, state}

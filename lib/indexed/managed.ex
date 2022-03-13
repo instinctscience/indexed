@@ -666,14 +666,8 @@ defmodule Indexed.Managed do
           path -> normalize_preload(path)
         end
 
-      children =
-        Enum.map(unquote(opts[:children]) || [], fn
-          {k, spec} when :many == elem(spec, 0) -> {k, Managed.normalize_spec(spec)}
-          other -> other
-        end)
-
       @managed_setup %Managed{
-        children: Map.new(children),
+        children: unquote(opts[:children] || []),
         default_path: default_path,
         fields: unquote(opts[:fields]),
         query_fn: unquote(opts[:query_fn]),
@@ -716,9 +710,14 @@ defmodule Indexed.Managed do
       @spec __preload_fn__(atom, atom, module) :: (map, Managed.State.t() -> map | [map]) | nil
       def __preload_fn__(name, key, repo) do
         case Enum.find(@managed, &(&1.name == name or &1.module == name)) do
-          %{children: %{^key => assoc_spec}} -> preload_fn(assoc_spec, repo)
-          %{} = managed -> preload_fn({:repo, key, managed}, repo)
-          nil -> nil
+          %{children: %{^key => assoc_spec}} ->
+            preload_fn(assoc_spec, repo)
+
+          %{} = managed ->
+            preload_fn({:repo, key, managed}, repo)
+
+          nil ->
+            nil
         end
       end
     end
@@ -736,6 +735,8 @@ defmodule Indexed.Managed do
       Enum.map(list, &if(&1.name == entity, do: fun.(&1), else: &1))
     end
 
+    manageds = Enum.map(manageds, &do_rewrite_child(&1, manageds))
+
     Enum.reduce(manageds, manageds, fn %{children: children}, acc ->
       Enum.reduce(children, acc, fn
         {_key, {:one, entity, _fkey}}, acc2 ->
@@ -745,6 +746,38 @@ defmodule Indexed.Managed do
           acc2
       end)
     end)
+  end
+
+  # Normalize child association specs. Takes managed to update and list of all.
+  @spec do_rewrite_child(t, [t]) :: t
+  defp do_rewrite_child(%{module: mod} = managed, manageds) do
+    Map.update!(managed, :children, fn children ->
+      Map.new(children, fn
+        k when is_atom(k) ->
+          case mod.__schema__(:association, k) do
+            %{cardinality: :one} = a ->
+              {k, {:one, entity_by_module(manageds, a.related), a.owner_key}}
+
+            %{cardinality: :many} = a ->
+              {k, {:many, entity_by_module(manageds, a.related), a.related_key, nil}}
+          end
+
+        {k, spec} when :many == elem(spec, 0) ->
+          {k, normalize_spec(spec)}
+
+        other ->
+          other
+      end)
+    end)
+  end
+
+  # Find the entity name in manageds using the given schema module.
+  @spec entity_by_module([t], module) :: atom
+  defp entity_by_module(manageds, mod) do
+    Enum.find_value(manageds, fn
+      %{name: name, module: ^mod} -> name
+      _ -> nil
+    end) || raise "No entity module #{mod} in #{inspect(Enum.map(manageds, & &1.module))}"
   end
 
   @spec validate_before_compile!(module, module, list) :: :ok
@@ -778,15 +811,20 @@ defmodule Indexed.Managed do
     :ok
   end
 
-  @doc "Invoke `Indexed.get/3` with a wrapped state for convenience."
-  @spec get(state_or_wrapped, atom, id, preload) :: any
+  @doc """
+  Invoke `Indexed.get/3`. State may be wrapped in a map under `:managed` key.
+
+  If `preload` is `true`, use the entity's default path.
+  """
+  @spec get(state_or_wrapped, atom, id, preload | true) :: any
   def get(state, name, id, preload \\ nil)
 
   def get(%{managed: managed_state}, name, id, preload) do
     get(managed_state, name, id, preload)
   end
 
-  def get(%{index: index} = state, name, id, preload) do
+  def get(%{index: index, module: mod} = state, name, id, preload) do
+    preload = if true == preload, do: mod.__managed__(name).default_path, else: preload
     record = Indexed.get(index, name, id)
     if preload, do: Managed.preload(record, state, preload), else: record
   end
