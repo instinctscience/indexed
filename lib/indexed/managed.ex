@@ -669,7 +669,7 @@ defmodule Indexed.Managed do
       @managed_setup %Managed{
         children: unquote(opts[:children] || []),
         default_path: default_path,
-        fields: unquote(opts[:fields]),
+        fields: unquote(opts[:fields] || []),
         query_fn: unquote(opts[:query_fn]),
         id_key: unquote(opts[:id_key] || :id),
         module: unquote(module),
@@ -735,7 +735,10 @@ defmodule Indexed.Managed do
       Enum.map(list, &if(&1.name == entity, do: fun.(&1), else: &1))
     end
 
-    manageds = Enum.map(manageds, &do_rewrite_child(&1, manageds))
+    manageds =
+      manageds
+      |> Enum.map(&do_rewrite_children(&1, manageds))
+      |> Enum.map(&do_rewrite_fields/1)
 
     Enum.reduce(manageds, manageds, fn %{children: children}, acc ->
       Enum.reduce(children, acc, fn
@@ -749,8 +752,8 @@ defmodule Indexed.Managed do
   end
 
   # Normalize child association specs. Takes managed to update and list of all.
-  @spec do_rewrite_child(t, [t]) :: t
-  defp do_rewrite_child(%{module: mod} = managed, manageds) do
+  @spec do_rewrite_children(t, [t]) :: t
+  defp do_rewrite_children(%{module: mod} = managed, manageds) do
     Map.update!(managed, :children, fn children ->
       Map.new(children, fn
         k when is_atom(k) ->
@@ -770,6 +773,16 @@ defmodule Indexed.Managed do
       end)
     end)
   end
+
+  # If :fields is empty, use the id key or the first field given by Ecto.
+  @spec do_rewrite_fields(t) :: t
+  defp do_rewrite_fields(%{fields: [], id_key: id_key} = m) when is_atom(id_key),
+    do: %{m | fields: [id_key]}
+
+  defp do_rewrite_fields(%{fields: [], module: mod} = m),
+    do: %{m | fields: [hd(mod.__schema__(:fields))]}
+
+  defp do_rewrite_fields(m), do: m
 
   # Find the entity name in manageds using the given schema module.
   @spec entity_by_module([t], module) :: atom

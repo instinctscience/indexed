@@ -16,15 +16,16 @@ defmodule BlogServer do
 
   managed :users, User,
     children: [:flare_pieces],
-    fields: [:name],
     subscribe: &Blog.subscribe_to_user/1,
     unsubscribe: &Blog.unsubscribe_from_user/1
 
-  managed :flare_pieces, FlarePiece, fields: [:name], prefilters: [:user_id]
+  managed :flare_pieces, FlarePiece,
+    fields: [:name],
+    prefilters: [:user_id]
 
   # These basically exist so comments can have a :one and a :many ref.
   # When `:this_blog` is false, don't keep them in the cache.
-  managed :replies, Reply, children: [:comment], fields: [:id]
+  managed :replies, Reply, children: [:comment]
 
   def call(msg), do: GenServer.call(__MODULE__, msg)
   def run(fun), do: call({:run, fun})
