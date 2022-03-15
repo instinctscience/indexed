@@ -1,6 +1,6 @@
 defmodule Indexed.Actions.Put do
   @moduledoc "An index action where a record is being added or updated."
-  import Indexed.Helpers, only: [id_value: 1]
+  import Indexed.Helpers, only: [id: 1]
   alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
   require Logger
@@ -38,7 +38,7 @@ defmodule Indexed.Actions.Put do
       record: record
     }
 
-    id = id_value(put)
+    id = id(put)
     put = %{put | previous: Indexed.get(index, entity_name, id)}
 
     Logger.debug("Putting into #{entity_name}: id #{id}")
@@ -201,7 +201,7 @@ defmodule Indexed.Actions.Put do
         prev_under_pf ->
           # Record is leaving this prefilter.
           put_index(put, field, prefilter, [:remove], newly_seen_value?)
-          msg = %{fingerprint: prefilter, id: id_value(put)}
+          msg = %{fingerprint: prefilter, id: id(put)}
           maybe_broadcast(put, prefilter, [:remove], msg)
 
         this_under_pf ->
@@ -230,7 +230,7 @@ defmodule Indexed.Actions.Put do
 
     new_desc_ids =
       Enum.reduce(actions, desc_ids.(desc_key), fn
-        :remove, dids -> dids -- [id_value(put)]
+        :remove, dids -> dids -- [id(put)]
         :add, dids -> insert_by(put, dids, field)
       end)
 
@@ -278,7 +278,7 @@ defmodule Indexed.Actions.Put do
 
     first_smaller_idx = Enum.find_index(old_desc_ids, find_fun)
 
-    List.insert_at(old_desc_ids, first_smaller_idx || -1, id_value(put))
+    List.insert_at(old_desc_ids, first_smaller_idx || -1, id(put))
   end
 
   # Update indexes and unique tracking for a view.

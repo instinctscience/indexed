@@ -35,8 +35,10 @@ defmodule Indexed.Managed do
   * `:query_fn` - Optional function which takes a queryable and returns a
     queryable. This allows for extra query logic to be added such as populating
     virtual fields. Invoked by `manage/4` when the association is needed.
-  * `:id_key` - Field name atom which carries the id to index with or a
-    function which accepts a record and returns the id to use. Default `:id`.
+  * `:id_key` - Specifies how to find the id for a record.  It can be an atom
+    field name to access, a function, or a tuple in the form `{module,
+    function_name}`. In the latter two cases, the record will be passed in.
+    Default `:id`.
   * `:subscribe` and `:unsubscribe` - Functions which take a record's ID and
     manage the subscription. These must both be declared or neither.
 
@@ -52,7 +54,7 @@ defmodule Indexed.Managed do
       end
   """
   import Ecto.Query, except: [preload: 3]
-  import Indexed.Helpers, only: [normalize_preload: 1]
+  import Indexed.Helpers, only: [id: 2, normalize_preload: 1]
   alias Ecto.Association.NotLoaded
   alias Indexed.Actions.Warm
   alias Indexed.{Entity, View}
@@ -105,7 +107,7 @@ defmodule Indexed.Managed do
         }
 
   @typedoc "For convenience, state is also accepted within a wrapping map."
-  @type state_or_wrapped :: %{:managed => state, optional(any) => any} | state
+  @type state_or_wrapped :: %{:managed => state | nil, optional(any) => any} | state
 
   @typedoc "A map of field names to assoc specs."
   @type children :: %{atom => assoc_spec}
@@ -194,6 +196,7 @@ defmodule Indexed.Managed do
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
       @spec warm(Managed.state_or_wrapped(), atom, Managed.data_opt(), Managed.path()) ::
               Managed.state_or_wrapped()
+      # TODO - use with_state
       def warm(%{managed: nil} = state, name, data_opt, path),
         do: %{state | managed: warm(init_managed_state(), name, data_opt, path)}
 
@@ -458,7 +461,7 @@ defmodule Indexed.Managed do
   # - If tracked, add record to tmp and also update tmp tracking data.
   @spec add(state, parent_info, t, record) :: state
   defp add(state, parent_info, %{id_key: id_key, name: name}, record) do
-    id = id(id_key, record)
+    id = id(record, id_key)
     record = drop_associations(record)
 
     case parent_info do
@@ -481,7 +484,7 @@ defmodule Indexed.Managed do
 
   @spec rm(state, parent_info, t, record) :: state
   defp rm(state, parent_info, %{id_key: id_key, name: name}, record) do
-    id = id(id_key, record)
+    id = id(record, id_key)
     cur = tmp_tracking(state, name, id)
 
     case {cur, parent_info} do
@@ -548,7 +551,7 @@ defmodule Indexed.Managed do
     assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey}, label: "** ONE add")
-    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
+    # log(Enum.map(records, &id(&1, assoc_managed)), label: "records")
     log(state.tracking, label: "trkk")
     log(state.tmp.tracking, label: "trkk tmp")
 
@@ -584,13 +587,13 @@ defmodule Indexed.Managed do
     %{module: assoc_mod} = assoc_managed = get_managed(state.module, assoc_name)
 
     log({name, path_entry, assoc_mod, fkey}, label: "** MANY add")
-    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
+    # log(Enum.map(records, &id(&1, assoc_managed)), label: "records")
 
     {assoc_records, ids} =
       Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_ids} ->
         case Map.fetch!(record, path_entry) do
           l when is_list(l) -> {l ++ acc_assoc_records, acc_ids}
-          _ -> {acc_assoc_records, [id(id_key, record) | acc_ids]}
+          _ -> {acc_assoc_records, [id(record, id_key) | acc_ids]}
         end
       end)
 
@@ -616,7 +619,7 @@ defmodule Indexed.Managed do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
 
     log({name, path_entry, assoc_managed.name, fkey, sub_path}, label: "** ONE rm")
-    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
+    # log(Enum.map(records, &id(&1, assoc_managed)), label: "records")
     # ONE rm: {:comments, :author, :users, :author_id}
 
     {state, assoc_records} =
@@ -649,11 +652,11 @@ defmodule Indexed.Managed do
     fkey = fkey || get_fkey(module, path_entry)
 
     log({name, path_entry, {:many, assoc_name, fkey}}, label: "** MANY rm")
-    log(Enum.map(records, &id(assoc_managed, &1)), label: "records")
+    # log(Enum.map(records, &id(&1, assoc_managed)), label: "records")
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
-        id = id(id_key, record)
+        id = id(record, id_key)
         assoc_records = get_records(acc_state, assoc_name, {fkey, id}) || []
         fun = &rm(&2, {name, id, path_entry}, assoc_managed, &1)
         acc_state = Enum.reduce(assoc_records, acc_state, fun)
@@ -848,12 +851,6 @@ defmodule Indexed.Managed do
     mod.__managed__(name) ||
       raise ":#{name} must have a managed declaration on #{inspect(mod)}."
   end
-
-  # Get the indexing "id" of a particular managed record.
-  @spec id(t | id_key | nil, map) :: any
-  defp id(id_key, record) when is_function(id_key), do: id_key.(record)
-  defp id(nil, record), do: raise("No id_key found for #{inspect(record)}")
-  defp id(id_key, record), do: Map.get(record, id_key)
 
   @doc """
   Given a preload function spec, create a preload function. `key` is the key of

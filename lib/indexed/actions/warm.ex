@@ -9,7 +9,7 @@ defmodule Indexed.Actions.Warm do
   @typedoc """
   * `:data_tuple` - full input data set with order/direction hint
   * `:entity_name` - entity name atom (eg. `:cars`)
-  * `:id_key` - Primary key to use in indexes and for accessing the records.
+  * `:id_key` - Specifies how to find the id for a record.
     See `t:Indexed.Entity.t/0`.
   * `:index_ref` - ETS table reference for storing index data
   """
@@ -78,7 +78,7 @@ defmodule Indexed.Actions.Warm do
           data_tuple = resolve_data_opt(opts[:data], entity_name, fields)
 
         # Load the records into ETS, keyed by :id or the :id_key field.
-        Enum.each(full_data, &:ets.insert(ref, {Helpers.id_value(&1, id_key), &1}))
+        Enum.each(full_data, &:ets.insert(ref, {Helpers.id(&1, id_key), &1}))
 
         warm = %Warm{
           data_tuple: data_tuple,
@@ -268,6 +268,6 @@ defmodule Indexed.Actions.Warm do
   @doc "Return a list of all ids from the `collection`."
   @spec id_list([Indexed.record()], any) :: [Indexed.id()]
   def id_list(collection, id_key) do
-    Enum.map(collection, &Helpers.id_value(&1, id_key))
+    Enum.map(collection, &Helpers.id(&1, id_key))
   end
 end
