@@ -2,7 +2,7 @@ defmodule Indexed.Managed do
   @moduledoc """
   Assists a GenServer in managing in-memory caches.
 
-  By annotating the entities to be managed, `manage/4` can handle updating the
+  By annotating the entities to be managed, `manage/5` can handle updating the
   cache for the given record and its associated records. (If associations are
   not preloaded, they will be automatically fetched.) In addition, entites with
   `:subscribe` and `:unsubscribe` functions defined will be automatically
@@ -11,16 +11,40 @@ defmodule Indexed.Managed do
 
   ## Example
 
+  This module owns and is responsible for affecting changes on the Car with id
+  1. It subscribes to updates to Person records as they may be updated
+  elsewhere.
+
       defmodule MyApp.CarManager do
+        use GenServer
         use Indexed.Managed, repo: MyApp.Repo
+        alias MyApp.{Car, Person, Repo}
 
-        managed :cars, MyApp.Car,
-          children: [passengers: {:many, :people}]
+        managed :cars, Car, default_path: :passengers, children: [:passengers]
 
-        managed :people, MyApp.Person,
-          query_fn: &MyApp.person_query/1,
+        managed :people, Person,
           subscribe: &MyApp.subscribe_to_person/1,
           unsubscribe: &MyApp.unsubscribe_from_person/1
+
+        @impl GenServer
+        def init(_), do: {:ok, warm(:cars, Repo.get(Car, 1))}
+
+        @impl GenServer
+        def handle_call(:get, state) do
+          {:reply, get(state, :cars, 1)}
+        end
+
+        def handle_call({:update, params}, _from, state) do
+          case state |> get(:cars, 1) |> Car.changeset(params) |> Repo.update() do
+            {:ok, new_car} = ok -> {:reply, ok, manage(state, :cars, :update, new_car)}
+            {:error, _} = err -> {:reply, err, state}
+          end
+        end
+
+        @impl GenServer
+        def handle_info({MyApp, [:person, :update], person}, state) do
+          {:noreply, manage(state, :people, :update, person)}
+        end
       end
 
   ## Managed Macro
@@ -29,12 +53,12 @@ defmodule Indexed.Managed do
   must be specified. If needed, a keyword list of options should follow.
 
   * `:children` - Keyword list with association fields as keys and
-    `t:assoc_spec/0`s as vals. This is used when recursing in `manage/4` as
+    `t:assoc_spec/0`s as vals. This is used when recursing in `manage/5` as
     well as when resolving. If an undeclared association is resolved,
     `Repo.get/2` will be used as a fallback.
   * `:query_fn` - Optional function which takes a queryable and returns a
     queryable. This allows for extra query logic to be added such as populating
-    virtual fields. Invoked by `manage/4` when the association is needed.
+    virtual fields. Invoked by `manage/5` when the association is needed.
   * `:id_key` - Specifies how to find the id for a record.  It can be an atom
     field name to access, a function, or a tuple in the form `{module,
     function_name}`. In the latter two cases, the record will be passed in.
@@ -84,7 +108,7 @@ defmodule Indexed.Managed do
   * `:id_key` - Used to get a record id. See `Managed.Entity.t/0`.
   * `:query_fn` - Optional function which takes a queryable and returns a
     queryable. This allows for extra query logic to be added such as populating
-    virtual fields. Invoked by `manage/4` when the association is needed.
+    virtual fields. Invoked by `manage/5` when the association is needed.
   * `:module` - The struct module which will be used for the records.
   * `:name` - Atom name of the managed entity.
   * `:prefilters` - Used to build the index. See `Managed.Entity.t/0`.
@@ -304,12 +328,24 @@ defmodule Indexed.Managed do
   end
 
   @doc """
-  Add, remove or update a managed record or list of them.
+  Add, remove or update one or more managed records.
 
-  The `name` entity should be declared as `managed`.
+  The entity `name` atom should be declared as `managed`.
 
-  If `state` is a map, wrapping the managed state under a `:managed` key, it
-  will be used as appropriate and returned re-wrapped.
+  Arguments 3 and 4 can take one of the following forms:
+
+  * The original record and the new record or lists of records: Records and
+    their associations will be added, removed or updated in the cache by ID.
+  * `:insert` and the new record: The given record and associations will be
+    added to the cache.
+  * `:update` and the newly updated record: The given record and associations
+    will be updated in the cache. If the original record cannot be found in the
+    cache, the process will crash.
+
+  `path` is formatted the same as Ecto's preload option and it specifies which
+  fields and how deeply to traverse when updating the in-memory cache.
+  If `path` is not supplied, the entity's `:default_path` will be used.
+  Supply `[]` to avoid managing associations.
   """
   @spec manage(
           state_or_wrapped,
@@ -319,55 +355,51 @@ defmodule Indexed.Managed do
           path
         ) ::
           state_or_wrapped
-  def manage(state, mon, orig, new, path \\ nil)
-
-  def manage(%{managed: managed_state} = state, mon, orig, new, path) do
-    %{state | managed: manage(managed_state, mon, orig, new, path)}
-  end
-
-  def manage(state, mon, orig, new, path) do
-    to_list = fn
-      nil -> []
-      i when is_map(i) -> [i]
-      i -> i
-    end
-
-    %{name: name, default_path: default_path} =
-      managed =
-      case mon do
-        %{} -> mon
-        name -> get_managed(state, name)
+  def manage(state, name, orig, new, path \\ nil) do
+    with_state(state, fn st ->
+      to_list = fn
+        nil -> []
+        i when is_map(i) -> [i]
+        i -> i
       end
 
-    orig =
-      case orig do
-        :insert -> nil
-        :update -> %{} = get(state, name, new.id)
-        og -> og
-      end
+      %{name: name, default_path: default_path} =
+        managed =
+        case name do
+          %{} -> name
+          name_atom -> get_managed(st, name_atom)
+        end
 
-    path =
-      case path do
-        nil -> default_path
-        p -> normalize_preload(p)
-      end
+      orig =
+        case orig do
+          :insert -> nil
+          :update -> %{} = get(st, name, new.id)
+          og -> og
+        end
 
-    new_records = to_list.(new)
-    orig_records = to_list.(orig)
+      path =
+        case path do
+          nil -> default_path
+          p -> normalize_preload(p)
+        end
 
-    l = &length/1
-    log("MANAGE: #{name}: #{l.(orig_records)} to #{l.(new_records)}")
+      new_records = to_list.(new)
+      orig_records = to_list.(orig)
 
-    manage_top = &Enum.reduce(&2, &1, &3)
-    manage_path = &do_manage_path(&1, name, &3, &2, path)
+      l = &length/1
+      log("MANAGE: #{name}: #{l.(orig_records)} to #{l.(new_records)}")
 
-    state
-    |> State.init_tmp()
-    |> manage_top.(orig_records, &rm(&2, {:top, name}, managed, &1))
-    |> manage_path.(orig_records, :rm)
-    |> manage_top.(new_records, &add(&2, {:top, name}, managed, &1))
-    |> manage_path.(new_records, :add)
-    |> do_manage_finish()
+      manage_top = &Enum.reduce(&2, &1, &3)
+      manage_path = &do_manage_path(&1, name, &3, &2, path)
+
+      st
+      |> State.init_tmp()
+      |> manage_top.(orig_records, &rm(&2, {:top, name}, managed, &1))
+      |> manage_path.(orig_records, :rm)
+      |> manage_top.(new_records, &add(&2, {:top, name}, managed, &1))
+      |> manage_path.(new_records, :add)
+      |> do_manage_finish()
+    end)
   end
 
   @spec do_manage_finish(state) :: state
