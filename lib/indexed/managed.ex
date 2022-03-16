@@ -345,8 +345,8 @@ defmodule Indexed.Managed do
   * `:insert` and the new record: The given record and associations will be
     added to the cache.
   * `:update` and the newly updated record: The given record and associations
-    will be updated in the cache. If the original record cannot be found in the
-    cache, the process will crash.
+    will be updated in the cache.
+  * `:delete` and the record or ID to remove from cache.
 
   `path` is formatted the same as Ecto's preload option and it specifies which
   fields and how deeply to traverse when updating the in-memory cache.
@@ -356,7 +356,7 @@ defmodule Indexed.Managed do
   @spec manage(
           state_or_wrapped,
           managed_or_name,
-          :insert | :update | record_or_list,
+          :insert | :update | :delete | record_or_list,
           record_or_list,
           path
         ) ::
@@ -376,11 +376,13 @@ defmodule Indexed.Managed do
           name_atom -> get_managed(st, name_atom)
         end
 
-      orig =
-        case orig do
-          :insert -> nil
-          :update -> %{} = get(st, name, new.id)
-          og -> og
+      {orig, new} =
+        case {orig, new} do
+          {:insert, n} -> {nil, n}
+          {:update, n} -> {%{} = get(st, name, new.id), n}
+          {:delete, o} when is_map(o) -> {o, nil}
+          {:delete, o} -> {%{} = get(st, name, o), nil}
+          o_n -> o_n
         end
 
       path =
