@@ -37,6 +37,9 @@ defmodule Indexed.Managed.Prepare do
 
           %{cardinality: :many} = a ->
             {k, {:many, entity_by_module(manageds, a.related), a.related_key, nil}}
+
+          nil ->
+            raise "#{inspect(mod)} lacks ecto association #{k}."
         end
 
       {k, spec} when :many == elem(spec, 0) ->

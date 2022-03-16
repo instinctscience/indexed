@@ -340,18 +340,24 @@ defmodule Indexed.Managed do
 
   Arguments 3 and 4 can take one of the following forms:
 
-  * The original record and the new record or lists of records: Records and
-    their associations will be added, removed or updated in the cache by ID.
   * `:insert` and the new record: The given record and associations will be
     added to the cache.
   * `:update` and the newly updated record: The given record and associations
-    will be updated in the cache.
+    will be updated in the cache. Raises if we don't hold the record.
+  * `:upsert` and the newly updated record: The given record and associations
+    will be updated in the cache. If we don't hold the record, insert.
   * `:delete` and the record or ID to remove from cache.
+    Raises if we don't hold the record.
+  * If the original and new records are already known, they may also be supplied
+    directly.
+
+  Records and their associations will be added, removed or updated in the cache
+  by ID.
 
   `path` is formatted the same as Ecto's preload option and it specifies which
   fields and how deeply to traverse when updating the in-memory cache.
   If `path` is not supplied, the entity's `:default_path` will be used.
-  Supply `[]` to avoid managing associations.
+  (Supply `[]` to override this and avoid managing associations.)
   """
   @spec manage(
           state_or_wrapped,
@@ -369,19 +375,24 @@ defmodule Indexed.Managed do
         i -> i
       end
 
-      %{name: name, default_path: default_path} =
+      %{id_key: id_key, name: name, default_path: default_path} =
         managed =
         case name do
           %{} -> name
           name_atom -> get_managed(st, name_atom)
         end
 
+      id = &id(&1, id_key)
+      get = &get(st, name, &1)
+      get! = &(get.(&1) || raise "Expected to already have #{name} id #{&1} but didn't.")
+
       {orig, new} =
         case {orig, new} do
           {:insert, n} -> {nil, n}
-          {:update, n} -> {%{} = get(st, name, new.id), n}
+          {:update, n} -> {get!.(id.(n)), n}
+          {:upsert, n} -> {get.(id.(n)), n}
           {:delete, o} when is_map(o) -> {o, nil}
-          {:delete, o} -> {%{} = get(st, name, o), nil}
+          {:delete, o} -> {get!.(o), nil}
           o_n -> o_n
         end
 

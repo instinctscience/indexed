@@ -1,3 +1,9 @@
+defimpl Inspect, for: Indexed.Managed.State do
+  def inspect(_state, _opts) do
+    "#Indexed.Managed.State<>"
+  end
+end
+
 defmodule Indexed.Managed.State do
   @moduledoc "A piece of GenServer state for Managed."
   alias __MODULE__
