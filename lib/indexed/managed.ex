@@ -194,15 +194,11 @@ defmodule Indexed.Managed do
 
       @doc "Create a Managed state struct, without index being initialized."
       @spec init_managed_state :: Managed.State.t()
-      def init_managed_state do
-        State.init(__MODULE__, unquote(repo))
-      end
+      def init_managed_state, do: State.init(__MODULE__, unquote(repo))
 
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
       @spec warm(atom, Managed.data_opt()) :: Managed.State.t()
-      def warm(name, data_opt) do
-        warm(name, data_opt, nil)
-      end
+      def warm(name, data_opt), do: warm(name, data_opt, nil)
 
       @doc """
       Invoke this function with (`state, entity_name, data_opt`) or
@@ -220,40 +216,34 @@ defmodule Indexed.Managed do
       @doc "Returns a freshly initialized state for `Indexed.Managed`."
       @spec warm(Managed.state_or_wrapped(), atom, Managed.data_opt(), Managed.path()) ::
               Managed.state_or_wrapped()
-      # TODO - use with_state
-      def warm(%{managed: nil} = state, name, data_opt, path),
-        do: %{state | managed: warm(init_managed_state(), name, data_opt, path)}
-
-      def warm(%{managed: managed} = state, name, data_opt, path),
-        do: %{state | managed: warm(managed, name, data_opt, path)}
-
-      def warm(state, name, data_opt, path),
-        do: do_warm(state, name, data_opt, path)
+      def warm(state, name, data_opt, path) do
+        with_state(state, &do_warm(&1 || init_managed_state(), name, data_opt, path))
+      end
     end
   end
 
-  @doc "Loads data into index, populating `:tracked` and subscribing as needed."
-  @spec do_warm(state, atom, data_opt, path | nil) :: state
-  def do_warm(state, name, data, path \\ nil)
-
-  def do_warm(%{index: nil, module: mod} = state, name, data, path) do
-    warm_args =
-      Enum.reduce(mod.__managed__(), [], fn entity, acc ->
-        managed = get_managed(mod, entity)
-
-        Keyword.put(acc, entity,
-          data: [],
-          fields: managed.fields,
-          id_key: managed.id_key,
-          prefilters: managed.prefilters
-        )
-      end)
-
-    state = %{state | index: Indexed.warm(warm_args)}
-    do_warm(state, name, data, path)
-  end
-
+  @doc "Loads initial data into index."
+  @spec do_warm(state, atom, data_opt, path) :: state
   def do_warm(%{module: mod} = state, name, data, path) do
+    state =
+      if is_nil(state.index) do
+        warm_args =
+          Enum.reduce(mod.__managed__(), [], fn entity, acc ->
+            managed = get_managed(mod, entity)
+
+            Keyword.put(acc, entity,
+              data: [],
+              fields: managed.fields,
+              id_key: managed.id_key,
+              prefilters: managed.prefilters
+            )
+          end)
+
+        %{state | index: Indexed.warm(warm_args)}
+      else
+        state
+      end
+
     # TODO - could probably make use of data_opt properly
     managed = get_managed(mod, name)
     {_, _, records} = Warm.resolve_data_opt(data, name, managed.fields)
@@ -836,15 +826,17 @@ defmodule Indexed.Managed do
     end)
   end
 
-  # Invoke fun with the managed state, finding it in the :managed key if needed.
-  # If fun returns a managed state and it was wrapped, rewrap it.
+  @doc """
+  Invoke fun with the managed state, finding it in the :managed key if needed.
+  If fun returns a managed state and it was wrapped, rewrap it.
+  """
   @spec with_state(state_or_wrapped, (state -> any)) :: any
-  defp with_state(%{managed: state} = wrapper, fun) do
+  def with_state(%{managed: state} = wrapper, fun) do
     with %State{} = new_managed <- fun.(state),
          do: %{wrapper | managed: new_managed}
   end
 
-  defp with_state(state, fun), do: fun.(state)
+  def with_state(state, fun), do: fun.(state)
 
   # Invoke :subscribe function for the given entity id if one is defined.
   @spec maybe_subscribe(module, atom, id) :: any
@@ -862,7 +854,12 @@ defmodule Indexed.Managed do
 
   defp log(val, opts \\ []) do
     if Process.get(:bb) do
-      IO.inspect(val, label: opts[:label])
+      case opts[:label] do
+        nil -> IO.puts(inspect(val))
+        lbl -> IO.puts("#{lbl}: #{inspect(val)}")
+      end
+
+      # IO.inspect(val, label: opts[:label])
       # # if Process.get(:bla) do
       # str = if is_binary(val), do: val, else: inspect(val)
 
