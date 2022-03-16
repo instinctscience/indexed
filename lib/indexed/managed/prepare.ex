@@ -3,6 +3,7 @@ defmodule Indexed.Managed.Prepare do
   Some tools for preparation and data normalization.
   """
   alias Indexed.{Entity, Managed}
+  alias Indexed.Managed.Helpers
 
   @doc """
   Make some automatic adjustments to the manageds list:
@@ -121,7 +122,7 @@ defmodule Indexed.Managed.Prepare do
         function_exported?(module, :__schema__, 1) ||
           raise "Schema module expected: #{inspect(module)} #{inf}"
 
-        Managed.preload_fn(normalize_spec(assoc_spec), repo) ||
+        Helpers.preload_fn(normalize_spec(assoc_spec), repo) ||
           raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"
       end
     end

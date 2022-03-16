@@ -1,25 +1,23 @@
 defmodule Indexed.Managed.State do
   @moduledoc "A piece of GenServer state for Managed."
   alias __MODULE__
+
   defstruct [:index, :module, :repo, :tmp, :tracking]
 
   @typedoc """
   Data structure used to hold temporary data while running `manage/5`.
 
-  # * `:add_ids` - For an entity name, the inner map uses tuple keys with the
-  #   entity id and its plural-named field with a many association. These map to a
-  #   list of ids which will be added in the "add" pass.
-  * `:keep` - Map of entity names to lists of IDs for records which may
-    otherwise be deleted because refs are 0 but in fact should NOT be deleted
-    because we are holding another record with a has_many relationship.
-  * `:records` - Outer map is keyed by entity name. Inner map is keyed by
-    record id. Values are the records themselves. These are new records which
-    may be committed to ETS at the end of the operation.
+  * `:records` - Records which may be committed to ETS at the end of the
+    operation. Outer map is keyed by entity name. Inner map is keyed by record
+    id.
+  * `:rm_ids` - Record IDs queued for removal with respect to their parent.
+    Outer map is keyed by entity name. Inner map is keyed by parent ID.
+    Inner-most map is keyed by parent field containing the children.
+  * `:top_rm_ids` - Top-level record IDs queued for removal.
   * `:tracking` - For record ids relevant to the operation, initial values are
     copied from State and manipulated as needed within this structure.
   """
   @type tmp :: %{
-          keep: %{atom => [id]},
           records: %{atom => %{id => record}},
           rm_ids: %{atom => %{id => %{atom => [id]}}},
           top_rm_ids: %{atom => [id]},
@@ -66,7 +64,6 @@ defmodule Indexed.Managed.State do
     %{
       state
       | tmp: %{
-          keep: %{},
           records: records,
           rm_ids: %{},
           top_rm_ids: %{},
