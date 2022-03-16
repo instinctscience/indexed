@@ -6,8 +6,8 @@ defmodule BlogServer do
 
   managed :posts, Post,
     children: [:author, :comments],
-    default_path: [:author, comments: :author],
-    fields: [:inserted_at]
+    fields: [:inserted_at],
+    manage_path: [:author, comments: :author]
 
   managed :comments, Comment,
     children: [:author, :post, :replies],
@@ -120,6 +120,7 @@ defmodule BlogServer do
       prepare: &preload(&1, state, opts[:preload] || [])
     ]
 
+    get_records(state, :flare_pieces)
     opts = Keyword.merge(defaults, opts)
     page = Indexed.paginate(state.index, :posts, opts)
 

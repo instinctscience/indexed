@@ -21,26 +21,6 @@ defmodule Indexed.Managed.Helpers do
 
   def with_state(state, fun), do: fun.(state)
 
-  def log(val, opts \\ []) do
-    if Process.get(:bb) do
-      case opts[:label] do
-        nil -> IO.puts(inspect(val))
-        lbl -> IO.puts("#{lbl}: #{inspect(val)}")
-      end
-
-      # IO.inspect(val, label: opts[:label])
-      # # if Process.get(:bla) do
-      # str = if is_binary(val), do: val, else: inspect(val)
-
-      # case opts[:label] do
-      #   nil -> IO.puts(str)
-      #   lbl -> IO.puts("#{lbl}: #{str}")
-      # end
-    end
-
-    val
-  end
-
   # Returns true if we're holding in cache
   # another record with a has_many including the record for match_id.
   @spec has_referring_many?(state, atom, id) :: boolean

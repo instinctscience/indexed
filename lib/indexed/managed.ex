@@ -11,8 +11,8 @@ defmodule Indexed.Managed do
 
   ## Example
 
-  This module owns and is responsible for affecting changes on the Car with id
-  1. It subscribes to updates to Person records as they may be updated
+  This module owns and is responsible for affecting changes on the Car with
+  id 1. It subscribes to updates to Person records as they may be updated
   elsewhere.
 
       defmodule MyApp.CarManager do
@@ -20,7 +20,7 @@ defmodule Indexed.Managed do
         use Indexed.Managed, repo: MyApp.Repo
         alias MyApp.{Car, Person, Repo}
 
-        managed :cars, Car, default_path: :passengers, children: [:passengers]
+        managed :cars, Car, children: [:passengers], manage_path: :passengers
 
         managed :people, Person,
           subscribe: &MyApp.subscribe_to_person/1,
@@ -81,7 +81,7 @@ defmodule Indexed.Managed do
   # Technical Explanation
   #
   # The core logic begins with `manage/5` where the original records and new
-  # records are received. The `path` parameter (or the entity's `:default_path`)
+  # records are received. The `path` parameter (or the entity's `:manage_path`)
   # is used to define how deeply we are to recurse into the associations.
   # Operation happens in three phases:
   #
@@ -103,10 +103,10 @@ defmodule Indexed.Managed do
 
   defstruct [
     :children,
-    :default_path,
     :fields,
     :id_key,
     :query,
+    :manage_path,
     :module,
     :name,
     :prefilters,
@@ -116,15 +116,15 @@ defmodule Indexed.Managed do
   ]
 
   @typedoc """
-  * `:children` - Map with assoc field name keys `t:assoc_spec/0` values.
+  * `:children` - Map with assoc field name keys `t:assoc_spec_opt/0` values.
     When this entity is managed, all children will also be managed and so on,
     recursively.
-  * `:default_path` - Default associations to traverse for `manage/5`.
   * `:fields` - Used to build the index. See `Managed.Entity.t/0`.
   * `:id_key` - Used to get a record id. See `Managed.Entity.t/0`.
   * `:query` - Optional function which takes a queryable and returns a
     queryable. This allows for extra query logic to be added such as populating
     virtual fields. Invoked by `manage/5` when the association is needed.
+  * `:manage_path` - Default associations to traverse for `manage/5`.
   * `:module` - The struct module which will be used for the records.
   * `:name` - Atom name of the managed entity.
   * `:prefilters` - Used to build the index. See `Managed.Entity.t/0`.
@@ -134,10 +134,10 @@ defmodule Indexed.Managed do
   """
   @type t :: %Managed{
           children: children,
-          default_path: path,
           fields: [atom | Entity.field()],
           id_key: id_key,
           query: (Ecto.Queryable.t() -> Ecto.Queryable.t()) | nil,
+          manage_path: path,
           module: module,
           name: atom,
           prefilters: [atom | keyword] | nil,
@@ -158,9 +158,6 @@ defmodule Indexed.Managed do
 
   * `{:one, entity_name, id_key}` - Preload function should get a record of
     `entity_name` with id matching the id found under `id_key` of the record.
-  * `{:many, entity_name}` - Uses Ecto.Schema to... IO.inspect! Otherwise, works the same as the next one.
-  * `{:many, entity_name, pf_key}` - Uses an order_hint default of the first
-    listed field, ascending. Otherwise, works the same as the next one.
   * `{:many, entity_name, pf_key, order_hint}` - Preload function should
     use `Indexed.get_records/4`. If `pf_key` is not null, it will be replaced
     with `{pfkey, id}` where `id` is the record's id.
@@ -168,15 +165,22 @@ defmodule Indexed.Managed do
     assoc's module and the id in the foreign key field for `key` in the record.
     This is the default when a child/assoc_spec isn't defined for an assoc.
   """
-  @type assoc_spec_opt ::
-          assoc_spec
-          | {:many, entity_name :: atom}
-          | {:many, entity_name :: atom, pf_key :: atom | nil}
-
   @type assoc_spec ::
           {:one, entity_name :: atom, id_key :: atom}
           | {:many, entity_name :: atom, pf_key :: atom | nil, order_hint}
           | {:repo, assoc_field :: atom, managed :: t}
+
+  @typedoc """
+  Assoc spec as provided in the managed declaration. See `t:assoc_spec/0`.
+
+  This is always normalized to `t:assoc_spec/0` at compile time.
+  Missing pieces are filled via `Ecto.Schema` reflection.
+  """
+  @type assoc_spec_opt ::
+          atom
+          | assoc_spec
+          | {:many, entity_name :: atom}
+          | {:many, entity_name :: atom, pf_key :: atom | nil}
 
   @type data_opt :: Warm.data_opt()
 
@@ -273,15 +277,15 @@ defmodule Indexed.Managed do
   @doc "Define a managed entity."
   defmacro managed(name, module, opts \\ []) do
     quote do
-      default_path =
-        case unquote(opts[:default_path]) do
+      manage_path =
+        case unquote(opts[:manage_path]) do
           nil -> []
           path -> normalize_preload(path)
         end
 
       @managed_setup %Managed{
         children: unquote(opts[:children] || []),
-        default_path: default_path,
+        manage_path: manage_path,
         fields: unquote(opts[:fields] || []),
         query: unquote(opts[:query]),
         id_key: unquote(opts[:id_key] || :id),
@@ -356,7 +360,7 @@ defmodule Indexed.Managed do
 
   `path` is formatted the same as Ecto's preload option and it specifies which
   fields and how deeply to traverse when updating the in-memory cache.
-  If `path` is not supplied, the entity's `:default_path` will be used.
+  If `path` is not supplied, the entity's `:manage_path` will be used.
   (Supply `[]` to override this and avoid managing associations.)
   """
   @spec manage(
@@ -375,7 +379,7 @@ defmodule Indexed.Managed do
         i -> i
       end
 
-      %{id_key: id_key, name: name, default_path: default_path} =
+      %{id_key: id_key, name: name, manage_path: manage_path} =
         managed =
         case name do
           %{} -> name
@@ -398,25 +402,22 @@ defmodule Indexed.Managed do
 
       path =
         case path do
-          nil -> default_path
+          nil -> manage_path
           p -> normalize_preload(p)
         end
 
       new_records = to_list.(new)
       orig_records = to_list.(orig)
 
-      l = &length/1
-      log("MANAGE: #{name}: #{l.(orig_records)} to #{l.(new_records)}")
-
-      manage_top = &Enum.reduce(&2, &1, &3)
-      manage_path = &do_manage_path(&1, name, &3, &2, path)
+      do_manage_top = &Enum.reduce(&2, &1, &3)
+      do_manage_path = &do_manage_path(&1, name, &3, &2, path)
 
       st
       |> State.init_tmp(name)
-      |> manage_top.(orig_records, &rm(&2, :top, managed, &1))
-      |> manage_path.(orig_records, :rm)
-      |> manage_top.(new_records, &add(&2, :top, managed, &1))
-      |> manage_path.(new_records, :add)
+      |> do_manage_top.(orig_records, &rm(&2, :top, managed, &1))
+      |> do_manage_path.(orig_records, :rm)
+      |> do_manage_top.(new_records, &add(&2, :top, managed, &1))
+      |> do_manage_path.(new_records, :add)
       |> do_manage_finish()
     end)
   end
@@ -435,28 +436,18 @@ defmodule Indexed.Managed do
     handle = fn
       # Had 0 references, now have 1+.
       st, name, id, 0, new_c when new_c > 0 ->
-        log({name, id, 0, new_c}, label: "had 0, now have 1+")
         maybe_subscribe(mod, name, id)
         put(st, name, get_tmp_record.(name, id))
         put_tracking.(st, name, id, new_c)
 
       # Had 1+ references, now have 0.
-      st, name, id, orig_c, 0 ->
-        log({name, id, orig_c, 0}, label: "had some, now have 0")
-
-        unless has_referring_many?(state, name, id) do
-          log(label: "dropping #{name} #{id}")
-          drop(st, name, id)
-        end
-
+      st, name, id, _orig_c, 0 ->
+        unless has_referring_many?(state, name, id), do: drop(st, name, id)
         maybe_unsubscribe(mod, name, id)
         update_in(st, [trk, name], &Map.delete(&1, id))
 
       # Had 1+, still have 1+. If new record isn't in tmp, it is unchanged.
-      st, name, id, orig_c, new_c ->
-        log({name, "id #{id}", orig_c, new_c}, label: "had 1+ still have 1+")
-        log(state.tmp.tracking, label: "TMP")
-        log(state.tracking, label: "TRK")
+      st, name, id, _orig_c, new_c ->
         tmp_rec = get_tmp_record.(name, id)
         if tmp_rec, do: put(st, name, tmp_rec)
         put_tracking.(st, name, id, new_c)
@@ -485,15 +476,12 @@ defmodule Indexed.Managed do
 
     case {cur, parent_info} do
       {_, :top} ->
-        log("RM TOP (#{name}) #{id}")
         add_tmp_rm_id(state, :top, id)
 
       {_, {_, _, _} = parent_info} ->
-        log("RM (#{name}) #{id}: parent_info #{inspect(parent_info)}")
         add_tmp_rm_id(state, parent_info, id)
 
       {cur, _} when cur > 0 ->
-        log("RM (#{name}) #{id}: new tracking #{cur - 1}")
         put_tmp_tracking(state, name, id, cur - 1)
     end
   end
@@ -510,17 +498,14 @@ defmodule Indexed.Managed do
 
     case parent_info do
       :top ->
-        log("ADD TOP (#{name}) #{inspect(record)}")
         put(state, name, record)
         subtract_tmp_rm_id(state, :top, id)
 
       nil ->
-        log("ADD undef parent (#{name}) #{inspect(record)}")
         state = put_tmp_tracking(state, name, id, &(&1 + 1))
         put_tmp_record(state, name, id, record)
 
       info ->
-        log("ADD #{inspect(info)} (#{name}) #{inspect(record)}")
         put(state, name, record)
         subtract_tmp_rm_id(state, info, id)
     end
@@ -530,7 +515,6 @@ defmodule Indexed.Managed do
   @spec do_manage_path(state, atom, add_or_rm, [record], keyword) :: state
   defp do_manage_path(state, name, action, records, path) do
     Enum.reduce(path, state, fn {path_entry, sub_path}, acc ->
-      log({path_entry, sub_path}, label: "do_manage_path path (#{action})")
       %{children: children} = get_managed(acc.module, name)
       spec = Map.fetch!(children, path_entry)
 
@@ -542,25 +526,40 @@ defmodule Indexed.Managed do
   # Then recursively handle associations according to sub_path therein.
   @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword) :: state
   # *** ONE ADD - these records have a `belongs_to :assoc_name` association.
-  defp do_manage_assoc(state, name, path_entry, {:one, assoc_name, fkey}, :add, records, sub_path) do
-    assoc_managed = get_managed(state, assoc_name)
+  defp do_manage_assoc(
+         state,
+         _name,
+         path_entry,
+         {:one, assoc_name, fkey},
+         :add,
+         records,
+         sub_path
+       ) do
+    %{id_key: assoc_id_key} = assoc_managed = get_managed(state, assoc_name)
 
-    log({name, path_entry, assoc_managed.name, fkey}, label: "** ONE add")
-
-    {state, assoc_records} =
-      Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
+    {assoc_records, assoc_ids} =
+      Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_assoc_ids} ->
         case Map.fetch!(record, fkey) do
           nil ->
-            {acc_state, acc_assoc_records}
+            {acc_assoc_records, acc_assoc_ids}
 
           assoc_id ->
-            assoc =
-              assoc_from_record(record, path_entry) ||
-                state.repo.get(build_query(assoc_managed), assoc_id)
-
-            {add(acc_state, nil, assoc_managed, assoc), [assoc | acc_assoc_records]}
+            case assoc_from_record(record, path_entry) do
+              nil -> {acc_assoc_records, [assoc_id | acc_assoc_ids]}
+              assoc -> {[assoc | acc_assoc_records], acc_assoc_ids}
+            end
         end
       end)
+
+    query = build_query(assoc_managed)
+    query = from x in query, where: field(x, ^assoc_id_key) in ^Enum.uniq(assoc_ids)
+    from_db = if [] == assoc_ids, do: [], else: state.repo.all(query)
+    from_db_map = Map.new(from_db, &{Map.fetch!(&1, assoc_id_key), &1})
+
+    add = &add(&2, nil, assoc_managed, &1)
+    state = Enum.reduce(assoc_records, state, add)
+    state = Enum.reduce(assoc_ids, state, &add.(Map.fetch!(from_db_map, &1), &2))
+    assoc_records = assoc_records ++ from_db
 
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end
@@ -576,9 +575,7 @@ defmodule Indexed.Managed do
          sub_path
        ) do
     %{id_key: id_key, module: entity_mod} = get_managed(state.module, name)
-    %{module: assoc_mod} = assoc_managed = get_managed(state.module, assoc_name)
-
-    log({name, path_entry, assoc_mod, fkey}, label: "** MANY add")
+    assoc_managed = get_managed(state.module, assoc_name)
 
     {assoc_records, ids} =
       Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_ids} ->
@@ -606,11 +603,16 @@ defmodule Indexed.Managed do
   end
 
   # *** ONE RM - these records have a `belongs_to :assoc_name` association.
-  defp do_manage_assoc(state, name, path_entry, {:one, assoc_name, fkey}, :rm, records, sub_path) do
+  defp do_manage_assoc(
+         state,
+         _name,
+         _path_entry,
+         {:one, assoc_name, fkey},
+         :rm,
+         records,
+         sub_path
+       ) do
     %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
-
-    log({name, path_entry, assoc_managed.name, fkey, sub_path}, label: "** ONE rm")
-    # ONE rm: {:comments, :author, :users, :author_id}
 
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
@@ -641,8 +643,6 @@ defmodule Indexed.Managed do
     assoc_managed = get_managed(state.module, assoc_name)
     fkey = fkey || get_fkey(module, path_entry)
 
-    log({name, path_entry, {:many, assoc_name, fkey}}, label: "** MANY rm")
-
     {state, assoc_records} =
       Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
         id = id(record, id_key)
@@ -664,7 +664,7 @@ defmodule Indexed.Managed do
   @spec get(state_or_wrapped, atom, id, preloads | true) :: any
   def get(state, name, id, preloads \\ nil) do
     with_state(state, fn %{index: index, module: mod} = st ->
-      p = if true == preloads, do: mod.__managed__(name).default_path, else: preloads
+      p = if true == preloads, do: mod.__managed__(name).manage_path, else: preloads
       record = Indexed.get(index, name, id)
       if p, do: preload(record, st, p), else: record
     end)
