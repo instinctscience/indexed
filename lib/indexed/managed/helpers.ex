@@ -71,16 +71,14 @@ defmodule Indexed.Managed.Helpers do
 
   # Drop from the index all records in tmp.top_rm_ids.
   @spec drop_top_rm_ids(state) :: :ok
-  def drop_top_rm_ids(%{tmp: %{top_rm_ids: trm_ids}} = state) do
-    Enum.each(trm_ids, fn {name, ids} ->
-      Enum.each(ids, &M.drop(state, name, &1))
-    end)
+  def drop_top_rm_ids(%{tmp: %{top_name: name, top_rm_ids: ids}} = state) do
+    Enum.each(ids, &M.drop(state, name, &1))
   end
 
   # Remove an assoc id from tmp.rm_ids.
   @spec subtract_tmp_rm_id(state, parent_info, id) :: state
-  def subtract_tmp_rm_id(state, {:top, name}, id) do
-    update_in(state, [Access.key(:tmp), :top_rm_ids, name], fn
+  def subtract_tmp_rm_id(state, :top, id) do
+    update_in(state, [Access.key(:tmp), :top_rm_ids], fn
       nil -> []
       l -> l -- [id]
     end)
@@ -91,9 +89,9 @@ defmodule Indexed.Managed.Helpers do
   end
 
   # Add an assoc id into tmp.rm_ids.
-  @spec add_tmp_rm_id(state, {:top, atom} | parent_info, id) :: state
-  def add_tmp_rm_id(state, {:top, name}, id) do
-    update_in(state, [Access.key(:tmp), :top_rm_ids, name], &[id | &1 || []])
+  @spec add_tmp_rm_id(state, parent_info, id) :: state
+  def add_tmp_rm_id(state, :top, id) do
+    update_in(state, [Access.key(:tmp), :top_rm_ids], &[id | &1 || []])
   end
 
   def add_tmp_rm_id(state, parent_info, id) do

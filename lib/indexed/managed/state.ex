@@ -13,6 +13,7 @@ defmodule Indexed.Managed.State do
   * `:rm_ids` - Record IDs queued for removal with respect to their parent.
     Outer map is keyed by entity name. Inner map is keyed by parent ID.
     Inner-most map is keyed by parent field containing the children.
+  * `:top_name` - Entity name of the top-level records.
   * `:top_rm_ids` - Top-level record IDs queued for removal.
   * `:tracking` - For record ids relevant to the operation, initial values are
     copied from State and manipulated as needed within this structure.
@@ -20,7 +21,8 @@ defmodule Indexed.Managed.State do
   @type tmp :: %{
           records: %{atom => %{id => record}},
           rm_ids: %{atom => %{id => %{atom => [id]}}},
-          top_rm_ids: %{atom => [id]},
+          top_name: atom,
+          top_rm_ids: [id],
           tracking: tracking
         }
 
@@ -57,8 +59,8 @@ defmodule Indexed.Managed.State do
   end
 
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
-  @spec init_tmp(t) :: t
-  def init_tmp(%{module: mod} = state) do
+  @spec init_tmp(t, atom) :: t
+  def init_tmp(%{module: mod} = state, name) do
     records = Map.new(mod.__tracked__(), &{&1, %{}})
 
     %{
@@ -66,7 +68,8 @@ defmodule Indexed.Managed.State do
       | tmp: %{
           records: records,
           rm_ids: %{},
-          top_rm_ids: %{},
+          top_name: name,
+          top_rm_ids: [],
           tracking: init_tracking(mod)
         }
     }

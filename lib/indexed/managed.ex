@@ -190,7 +190,7 @@ defmodule Indexed.Managed do
   2. ID of the parent.
   3. Field name which would have the list of children if loaded.
   """
-  @type parent_info :: {:top, name :: atom} | {parent_name :: atom, id, path_entry :: atom} | nil
+  @type parent_info :: :top | {parent_name :: atom, id, path_entry :: atom} | nil
 
   @typep id_key :: atom | (record -> id)
   @typep add_or_rm :: :add | :rm
@@ -399,10 +399,10 @@ defmodule Indexed.Managed do
       manage_path = &do_manage_path(&1, name, &3, &2, path)
 
       st
-      |> State.init_tmp()
-      |> manage_top.(orig_records, &rm(&2, {:top, name}, managed, &1))
+      |> State.init_tmp(name)
+      |> manage_top.(orig_records, &rm(&2, :top, managed, &1))
       |> manage_path.(orig_records, :rm)
-      |> manage_top.(new_records, &add(&2, {:top, name}, managed, &1))
+      |> manage_top.(new_records, &add(&2, :top, managed, &1))
       |> manage_path.(new_records, :add)
       |> do_manage_finish()
     end)
@@ -471,9 +471,9 @@ defmodule Indexed.Managed do
     cur = tmp_tracking(state, name, id)
 
     case {cur, parent_info} do
-      {_, {:top, ^name}} ->
+      {_, :top} ->
         log("RM TOP (#{name}) #{id}")
-        add_tmp_rm_id(state, {:top, name}, id)
+        add_tmp_rm_id(state, :top, id)
 
       {_, {_, _, _} = parent_info} ->
         log("RM (#{name}) #{id}: parent_info #{inspect(parent_info)}")
@@ -496,10 +496,10 @@ defmodule Indexed.Managed do
     record = drop_associations(record)
 
     case parent_info do
-      {:top, ^name} ->
+      :top ->
         log("ADD TOP (#{name}) #{inspect(record)}")
         put(state, name, record)
-        subtract_tmp_rm_id(state, {:top, name}, id)
+        subtract_tmp_rm_id(state, :top, id)
 
       nil ->
         log("ADD undef parent (#{name}) #{inspect(record)}")
