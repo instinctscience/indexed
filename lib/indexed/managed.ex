@@ -283,6 +283,8 @@ defmodule Indexed.Managed do
           path -> normalize_preload(path)
         end
 
+      require unquote(module)
+
       @managed_setup %Managed{
         children: unquote(opts[:children] || []),
         manage_path: manage_path,

@@ -129,7 +129,7 @@ defmodule Indexed.Managed.Prepare do
           raise("#{inspect(related_mod)} must be tracked #{inf}.")
 
         function_exported?(module, :__schema__, 1) ||
-          raise "Schema module expected: #{inspect(module)} #{inf}"
+          raise "#{inspect(module)} should be a schema module #{inf}"
 
         Helpers.preload_fn(normalize_spec(assoc_spec), repo) ||
           raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"

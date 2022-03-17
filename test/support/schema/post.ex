@@ -5,7 +5,7 @@ defmodule Post do
 
   schema "posts" do
     belongs_to :author, User
-    field :first_commenter, :map, virtual: true
+    belongs_to :first_commenter, User, define_field: false
     field :first_commenter_id, :integer, virtual: true
     has_many :comments, Comment, on_replace: :delete
     field :content, :string
