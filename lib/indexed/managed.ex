@@ -344,19 +344,19 @@ defmodule Indexed.Managed do
 
   Arguments 3 and 4 can take one of the following forms:
 
-  * `:insert` and the new record: The given record and associations will be
-    added to the cache.
-  * `:update` and the newly updated record: The given record and associations
-    will be updated in the cache. Raises if we don't hold the record.
+  * `:insert` and the new record: The given record and associations are added to
+    the cache.
+  * `:update` and the newly updated record or its ID: The given record and
+    associations are updated in the cache. Raises if we don't hold the record.
   * `:upsert` and the newly updated record: The given record and associations
-    will be updated in the cache. If we don't hold the record, insert.
+    are updated in the cache. If we don't hold the record, insert.
   * `:delete` and the record or ID to remove from cache.
     Raises if we don't hold the record.
   * If the original and new records are already known, they may also be supplied
     directly.
 
-  Records and their associations will be added, removed or updated in the cache
-  by ID.
+  Records and their associations are added, removed or updated in the cache by
+  ID.
 
   `path` is formatted the same as Ecto's preload option and it specifies which
   fields and how deeply to traverse when updating the in-memory cache.
@@ -366,19 +366,13 @@ defmodule Indexed.Managed do
   @spec manage(
           state_or_wrapped,
           managed_or_name,
-          :insert | :update | :delete | record_or_list,
+          :insert | :update | :delete | id | record_or_list,
           record_or_list,
           path
         ) ::
           state_or_wrapped
   def manage(state, name, orig, new, path \\ nil) do
     with_state(state, fn st ->
-      to_list = fn
-        nil -> []
-        i when is_map(i) -> [i]
-        i -> i
-      end
-
       %{id_key: id_key, name: name, manage_path: manage_path} =
         managed =
         case name do
@@ -393,7 +387,8 @@ defmodule Indexed.Managed do
       {orig, new} =
         case {orig, new} do
           {:insert, n} -> {nil, n}
-          {:update, n} -> {get!.(id.(n)), n}
+          {:update, %{} = n} -> {get!.(id.(n)), n}
+          {:update, id} -> Tuple.duplicate(get!.(id), 2)
           {:upsert, n} -> {get.(id.(n)), n}
           {:delete, o} when is_map(o) -> {o, nil}
           {:delete, o} -> {get!.(o), nil}
@@ -405,6 +400,12 @@ defmodule Indexed.Managed do
           nil -> manage_path
           p -> normalize_preload(p)
         end
+
+      to_list = fn
+        nil -> []
+        i when is_map(i) -> [i]
+        i -> i
+      end
 
       new_records = to_list.(new)
       orig_records = to_list.(orig)
@@ -551,10 +552,16 @@ defmodule Indexed.Managed do
         end
       end)
 
-    query = build_query(assoc_managed)
-    query = from x in query, where: field(x, ^assoc_id_key) in ^Enum.uniq(assoc_ids)
-    from_db = if [] == assoc_ids, do: [], else: state.repo.all(query)
-    from_db_map = Map.new(from_db, &{Map.fetch!(&1, assoc_id_key), &1})
+    {from_db, from_db_map} =
+      if [] == assoc_ids do
+        {[], %{}}
+      else
+        q_assoc_ids = Enum.uniq(assoc_ids) -- Enum.map(assoc_records, &id(&1, assoc_id_key))
+        query = build_query(assoc_managed)
+        query = from x in query, where: field(x, ^assoc_id_key) in ^q_assoc_ids
+        from_db = state.repo.all(query)
+        {from_db, Map.new(from_db, &{Map.fetch!(&1, assoc_id_key), &1})}
+      end
 
     add = &add(&2, nil, assoc_managed, &1)
     state = Enum.reduce(assoc_records, state, add)

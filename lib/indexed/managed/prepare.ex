@@ -113,14 +113,20 @@ defmodule Indexed.Managed.Prepare do
         do: raise("Must have both :subscribe and :unsubscribe or neither #{inf}.")
 
       for {key, assoc_spec} <- children do
-        related =
-          case module.__schema__(:association, key) do
-            %{related: r} -> r
-            nil -> raise "Expected association #{key} on #{inspect(module)}."
+        related_mod =
+          case assoc_spec do
+            spec when is_atom(spec) ->
+              case module.__schema__(:association, key) do
+                %{related: r} -> r
+                nil -> raise "Expected association #{key} on #{inspect(module)}."
+              end
+
+            spec ->
+              Enum.find(managed, &(&1.name == elem(spec, 1))).module
           end
 
-        unless Enum.find(managed, &(&1.module == related)),
-          do: raise("#{inspect(related)} must be tracked #{inf}.")
+        Enum.find(managed, &(&1.module == related_mod)) ||
+          raise("#{inspect(related_mod)} must be tracked #{inf}.")
 
         function_exported?(module, :__schema__, 1) ||
           raise "Schema module expected: #{inspect(module)} #{inf}"

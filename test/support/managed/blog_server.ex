@@ -5,13 +5,15 @@ defmodule BlogServer do
   alias Indexed.Test.Repo
 
   managed :posts, Post,
-    children: [:author, :comments],
+    children: [:author, :comments, first_commenter: {:one, :users, :first_commenter_id}],
     fields: [:inserted_at],
-    manage_path: [:author, comments: :author]
+    manage_path: [:first_commenter, author: :flare_pieces, comments: [author: :flare_pieces]],
+    query: &Blog.with_first_commenter_id_query/1
 
   managed :comments, Comment,
     children: [:author, :post, :replies],
-    fields: [:inserted_at]
+    fields: [:inserted_at],
+    manage_path: [author: :flare_pieces]
 
   managed :users, User,
     children: [:flare_pieces],
@@ -44,7 +46,7 @@ defmodule BlogServer do
 
     {:ok,
      init_managed_state()
-     |> warm(:posts, posts, author: :flare_pieces, comments: [author: :flare_pieces])
+     |> warm(:posts, posts)
      |> warm(:replies, replies, :comment)}
   end
 
@@ -74,8 +76,10 @@ defmodule BlogServer do
   def handle_call({:update_post, post_id, params}, _from, state) do
     with %{} = post <- get(state, :posts, post_id, true),
          %{valid?: true} = cs <- Post.changeset(post, params),
-         {:ok, new_post} = ok <- Repo.update(cs) do
-      {:reply, ok, manage(state, :posts, post, new_post)}
+         {:ok, _} <- Repo.update(cs) do
+      new_post = Blog.get_post(post.id)
+      state = manage(state, :posts, post, new_post)
+      {:reply, {:ok, get(state, :posts, post_id, true)}, state}
     else
       {:error, _cs} = err -> {:reply, err, state}
       _ -> {:reply, :error, state}
@@ -99,8 +103,10 @@ defmodule BlogServer do
         {:reply, :error, state}
 
       comment ->
-        {:reply, Repo.delete(comment),
-         manage(state, :comments, comment, nil, author: :flare_pieces)}
+        {:reply, {:ok, _} = Repo.delete(comment),
+         state
+         |> manage(:comments, :delete, comment)
+         |> manage(:posts, :update, Blog.get_post(comment.post_id), :first_commenter)}
     end
   end
 
