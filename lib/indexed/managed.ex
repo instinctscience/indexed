@@ -190,9 +190,10 @@ defmodule Indexed.Managed do
   @typedoc """
   Used to explain the parent entity when processing its has_many relationship.
   Either {:top, name} where name is the top-level entity name OR
+  `nil` for a parent with a :one association OR a tuple with
   1. Parent entity name.
   2. ID of the parent.
-  3. Field name which would have the list of children if loaded.
+  3. Field name which would have the list of :many children if loaded.
   """
   @type parent_info :: :top | {parent_name :: atom, id, path_entry :: atom} | nil
 
@@ -267,7 +268,6 @@ defmodule Indexed.Managed do
         state
       end
 
-    # TODO - could probably make use of data_opt properly
     managed = get_managed(mod, name)
     {_, _, records} = Warm.resolve_data_opt(data, name, managed.fields)
 
@@ -382,35 +382,13 @@ defmodule Indexed.Managed do
           name_atom -> get_managed(st, name_atom)
         end
 
-      id = &id(&1, id_key)
-      get = &get(st, name, &1)
-      get! = &(get.(&1) || raise "Expected to already have #{name} id #{&1} but didn't.")
-
-      {orig, new} =
-        case {orig, new} do
-          {:insert, n} -> {nil, n}
-          {:update, %{} = n} -> {get!.(id.(n)), n}
-          {:update, id} -> Tuple.duplicate(get!.(id), 2)
-          {:upsert, n} -> {get.(id.(n)), n}
-          {:delete, o} when is_map(o) -> {o, nil}
-          {:delete, o} -> {get!.(o), nil}
-          o_n -> o_n
-        end
+      {orig_records, new_records} = orig_and_new(st, name, id_key, orig, new)
 
       path =
         case path do
           nil -> manage_path
           p -> normalize_preload(p)
         end
-
-      to_list = fn
-        nil -> []
-        i when is_map(i) -> [i]
-        i -> i
-      end
-
-      new_records = to_list.(new)
-      orig_records = to_list.(orig)
 
       do_manage_top = &Enum.reduce(&2, &1, &3)
       do_manage_path = &do_manage_path(&1, name, &3, &2, path)
@@ -423,6 +401,39 @@ defmodule Indexed.Managed do
       |> do_manage_path.(new_records, :add)
       |> do_manage_finish()
     end)
+  end
+
+  # Normalize manage/5's orig and new parameters into 2 lists of records.
+  @spec orig_and_new(
+          state,
+          atom,
+          id_key,
+          :insert | :update | :delete | id | record_or_list,
+          record_or_list
+        ) :: {[record], [record]}
+  defp orig_and_new(state, name, id_key, orig, new) do
+    id = &id(&1, id_key)
+    get = &get(state, name, &1)
+    get! = &(get.(&1) || raise "Expected to already have #{name} id #{&1}.")
+
+    {orig, new} =
+      case {orig, new} do
+        {:insert, n} -> {nil, n}
+        {:update, %{} = n} -> {get!.(id.(n)), n}
+        {:update, id} -> Tuple.duplicate(get!.(id), 2)
+        {:upsert, n} -> {get.(id.(n)), n}
+        {:delete, o} when is_map(o) -> {o, nil}
+        {:delete, id} -> {get!.(id), nil}
+        o_n -> o_n
+      end
+
+    to_list = fn
+      nil -> []
+      i when is_map(i) -> [i]
+      i -> i
+    end
+
+    {to_list.(orig), to_list.(new)}
   end
 
   @spec do_manage_finish(state) :: state

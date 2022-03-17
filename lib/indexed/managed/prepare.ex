@@ -3,7 +3,7 @@ defmodule Indexed.Managed.Prepare do
   Some tools for preparation and data normalization.
   """
   alias Indexed.{Entity, Managed}
-  alias Indexed.Managed.Helpers
+  # alias Indexed.Managed.Helpers
 
   @doc """
   Make some automatic adjustments to the manageds list:
@@ -29,25 +29,34 @@ defmodule Indexed.Managed.Prepare do
   # Normalize child association specs. Takes managed to update and list of all.
   @spec do_rewrite_children(Managed.t(), [Managed.t()]) :: Managed.children()
   defp do_rewrite_children(%{children: children, module: mod}, manageds) do
+    spec = &child_spec_from_ecto(mod, &1, manageds)
+
     Map.new(children, fn
       k when is_atom(k) ->
-        case mod.__schema__(:association, k) do
-          %{cardinality: :one} = a ->
-            {k, {:one, entity_by_module(manageds, a.related), a.owner_key}}
-
-          %{cardinality: :many} = a ->
-            {k, {:many, entity_by_module(manageds, a.related), a.related_key, nil}}
-
-          nil ->
-            raise "#{inspect(mod)} lacks ecto association #{k}."
-        end
+        {k, spec.(k)}
 
       {k, spec} when :many == elem(spec, 0) ->
         {k, normalize_spec(spec)}
 
+      {k, order_by: order_by} ->
+        {k, with({:many, a, b, nil} <- spec.(k), do: {:many, a, b, order_by})}
+
       other ->
         other
     end)
+  end
+
+  defp child_spec_from_ecto(mod, field, manageds) do
+    case mod.__schema__(:association, field) do
+      %{cardinality: :one} = a ->
+        {:one, entity_by_module(manageds, a.related), a.owner_key}
+
+      %{cardinality: :many} = a ->
+        {:many, entity_by_module(manageds, a.related), a.related_key, nil}
+
+      nil ->
+        raise "#{inspect(mod)} lacks ecto association #{field}."
+    end
   end
 
   # Auto-add prefilters needed for foreign many assocs to operate.
@@ -104,36 +113,38 @@ defmodule Indexed.Managed.Prepare do
 
   @spec validate_before_compile!(module, module, list) :: :ok
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  def validate_before_compile!(mod, repo, managed) do
-    for %{children: children, module: module, name: name, subscribe: sub, unsubscribe: unsub} <-
+  def validate_before_compile!(mod, _repo, managed) do
+    for %{children: _children, module: module, name: name, subscribe: sub, unsubscribe: unsub} <-
           managed do
       inf = "in #{inspect(mod)} for #{name}"
 
       if (sub != nil and is_nil(unsub)) or (unsub != nil and is_nil(sub)),
         do: raise("Must have both :subscribe and :unsubscribe or neither #{inf}.")
 
-      for {key, assoc_spec} <- children do
-        related_mod =
-          case assoc_spec do
-            spec when is_atom(spec) ->
-              case module.__schema__(:association, key) do
-                %{related: r} -> r
-                nil -> raise "Expected association #{key} on #{inspect(module)}."
-              end
+      function_exported?(module, :__schema__, 1) ||
+        raise "#{inspect(module)} should be a schema module #{inf}"
 
-            spec ->
-              Enum.find(managed, &(&1.name == elem(spec, 1))).module
-          end
+      # for {key, assoc_spec} <- children do
+      #   related_mod =
+      #     case assoc_spec do
+      #       field when is_atom(field) ->
+      #         case module.__schema__(:association, key) do
+      #           %{related: r} -> r
+      #           nil -> raise "Expected association #{key} on #{inspect(module)}."
+      #         end
 
-        Enum.find(managed, &(&1.module == related_mod)) ||
-          raise("#{inspect(related_mod)} must be tracked #{inf}.")
+      #       {field, opts} ->
 
-        function_exported?(module, :__schema__, 1) ||
-          raise "#{inspect(module)} should be a schema module #{inf}"
+      #       spec ->
+      #         Enum.find(managed, &(&1.name == elem(spec, 1))).module
+      #     end
 
-        Helpers.preload_fn(normalize_spec(assoc_spec), repo) ||
-          raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"
-      end
+      #   Enum.find(managed, &(&1.module == related_mod)) ||
+      #     raise("#{inspect(related_mod)} must be tracked #{inf}.")
+
+      #   Helpers.preload_fn(normalize_spec(assoc_spec |> IO.inspect(label: "ho")) |> IO.inspect(label: "hey"), repo) ||
+      #     raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"
+      # end
     end
 
     :ok

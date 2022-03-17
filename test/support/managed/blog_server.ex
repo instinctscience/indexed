@@ -5,7 +5,7 @@ defmodule BlogServer do
   alias Indexed.Test.Repo
 
   managed :posts, Post,
-    children: [:author, :comments, :first_commenter],
+    children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
     fields: [:inserted_at],
     manage_path: [:first_commenter, author: :flare_pieces, comments: [author: :flare_pieces]],
     query: &Blog.with_first_commenter_id_query/1
