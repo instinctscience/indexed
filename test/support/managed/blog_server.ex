@@ -4,11 +4,13 @@ defmodule BlogServer do
   use Indexed.Managed, repo: Indexed.Test.Repo
   alias Indexed.Test.Repo
 
+  @user_preloads [:best_friend, :flare_pieces]
+
   managed :posts, Post,
     children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
     fields: [:inserted_at],
-    manage_path: [:first_commenter, author: :flare_pieces, comments: [author: :flare_pieces]],
-    query: &Blog.with_first_commenter_id_query/1
+    manage_path: [:first_commenter, author: @user_preloads, comments: [author: @user_preloads]],
+    query: &Blog.post_with_first_commenter_id_query/1
 
   managed :comments, Comment,
     children: [:author, :post, :replies],
@@ -16,14 +18,14 @@ defmodule BlogServer do
     manage_path: [author: :flare_pieces]
 
   managed :users, User,
-    children: [:flare_pieces],
+    children: [:best_friend, :flare_pieces],
     prefilters: [:name],
     subscribe: &Blog.subscribe_to_user/1,
     unsubscribe: &Blog.unsubscribe_from_user/1
 
   managed :flare_pieces, FlarePiece, fields: [:name]
 
-  # These basically exist so comments can have a :one and a :many ref.
+  # Replies basically exist so comments can have a :one and a :many ref.
   # When `:this_blog` is false, don't keep them in the cache.
   managed :replies, Reply, children: [:comment]
 

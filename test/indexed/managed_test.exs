@@ -16,9 +16,11 @@ defmodule Indexed.ManagedTest do
   defp entries, do: paginate().entries
 
   defp basic_setup do
-    {:ok, %{id: bob_id}} = Blog.create_user("bob", ["pin"])
+    {:ok, %{id: bob_id} = bob} = Blog.create_user("bob", ["pin"])
     {:ok, %{id: jill_id}} = Blog.create_user("jill", ["hat", "mitten"])
     {:ok, %{id: lee_id}} = Blog.create_user("lee", ["wig"])
+    {:ok, %{id: lucy_id}} = Blog.create_user("lucy")
+    {:ok, _} = Blog.update_user(bob, %{best_friend_id: lucy_id})
 
     Repo.insert!(%Post{
       author_id: bob_id,
@@ -40,16 +42,17 @@ defmodule Indexed.ManagedTest do
 
     bs = start_supervised!(BlogServer.child_spec(feedback_pid: self()))
 
-    {s1, s2, s3} = {"user-#{bob_id}", "user-#{jill_id}", "user-#{lee_id}"}
+    {s1, s2, s3, s4} = {"user-#{bob_id}", "user-#{jill_id}", "user-#{lee_id}", "user-#{lucy_id}"}
     assert_receive [:subscribe, ^s1]
     assert_receive [:subscribe, ^s2]
     assert_receive [:subscribe, ^s3]
+    assert_receive [:subscribe, ^s4]
 
-    %{bs_pid: bs, ids: %{bob: bob_id, jill: jill_id, lee: lee_id}}
+    %{bs_pid: bs, ids: %{bob: bob_id, jill: jill_id, lee: lee_id, lucy: lucy_id}}
   end
 
-  test "basic" do
-    %{bs_pid: bs_pid, ids: %{bob: bob_id, jill: jill_id}} = basic_setup()
+  test "a runthrough / scenario" do
+    %{bs_pid: bs_pid, ids: %{bob: bob_id, jill: jill_id, lucy: lucy_id}} = basic_setup()
 
     bob = Blog.get_user("bob")
     {:ok, _} = Blog.update_user(bob, %{name: "fred"})
@@ -77,15 +80,15 @@ defmodule Indexed.ManagedTest do
              }
            ] = entries()
 
-    assert [%{name: "fred"}, %{name: "jill"}, %{name: "lee"}] = records(:users)
+    assert [%{name: "fred"}, %{name: "jill"}, %{name: "lee"}, %{name: "lucy"}] = records(:users)
     assert %{^bob_id => 5, ^jill_id => 2, ^lee_id => 1} = tracking(bs_pid, :users)
 
     {:ok, _} = Blog.delete_comment(comment_id)
 
     msg = "user-#{jill_id}"
     assert_receive [:unsubscribe, ^msg]
-    assert [%{name: "fred"}, %{name: "lee"}] = records(:users)
-    assert %{bob_id => 5, lee_id => 2} == tracking(bs_pid, :users)
+    assert [%{name: "fred"}, %{name: "lee"}, %{name: "lucy"}] = records(:users)
+    assert %{bob_id => 5, lee_id => 2, lucy_id => 2} == tracking(bs_pid, :users)
     assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
 
     refute Enum.any?(records(:flare_pieces), &(&1.name in ~w(hat mitten)))

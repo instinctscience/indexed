@@ -9,6 +9,7 @@ defmodule Indexed.Test.Repo.Migrations.CreateCar do
     end
 
     create table(:users) do
+      add(:best_friend_id, references(:users))
       add(:name, :string)
       timestamps()
     end

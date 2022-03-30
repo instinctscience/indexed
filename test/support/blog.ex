@@ -41,14 +41,14 @@ defmodule Blog do
 
   def broadcast(result, _, _, _), do: result
 
-  def all_posts, do: Repo.all(with_first_commenter_id_query(Post))
+  def all_posts, do: Repo.all(post_with_first_commenter_id_query(Post))
   def all_comments, do: Repo.all(Comment)
   def all_users, do: Repo.all(User)
 
   def all_replies(this_blog: true), do: Repo.all(from Reply, where: [this_blog: true])
   def all_replies, do: Repo.all(Reply)
 
-  def get_post(id), do: Repo.get(with_first_commenter_id_query(Post), id)
+  def get_post(id), do: Repo.get(post_with_first_commenter_id_query(Post), id)
   def get_user(id) when is_integer(id), do: Repo.get(User, id)
   def get_user(id), do: Repo.get_by(User, name: id)
 
@@ -94,7 +94,7 @@ defmodule Blog do
     :ok
   end
 
-  def with_first_commenter_id_query(Post) do
+  def post_with_first_commenter_id_query(Post) do
     from p in Post,
       distinct: ^[asc: :id],
       left_join: c in assoc(p, :comments),
