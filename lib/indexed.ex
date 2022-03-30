@@ -1,3 +1,9 @@
+defimpl Inspect, for: Indexed do
+  def inspect(_state, _opts) do
+    "#Indexed<>"
+  end
+end
+
 defmodule Indexed do
   @moduledoc """
   Tools for creating an index module.
@@ -72,7 +78,7 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure by key."
-  @spec get_index(Indexed.t(), String.t(), any) :: list | map | nil
+  @spec get_index(Indexed.t(), String.t(), any) :: any
   def get_index(index, index_key, default \\ nil) do
     case :ets.lookup(index.index_ref, index_key) do
       [{^index_key, val}] -> val

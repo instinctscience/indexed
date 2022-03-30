@@ -141,7 +141,8 @@
         {Credo.Check.Warning.OperationOnSameValues, []},
         {Credo.Check.Warning.OperationWithConstantResult, []},
         {Credo.Check.Warning.RaiseInsideRescue, []},
-        {Credo.Check.Warning.UnusedEnumOperation, []},
+        # Disabled this because of false positive (put.ex:254)
+        {Credo.Check.Warning.UnusedEnumOperation, false},
         {Credo.Check.Warning.UnusedFileOperation, []},
         {Credo.Check.Warning.UnusedKeywordOperation, []},
         {Credo.Check.Warning.UnusedListOperation, []},

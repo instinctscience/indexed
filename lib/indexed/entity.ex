@@ -28,8 +28,7 @@ defmodule Indexed.Entity do
         }
 
   @typedoc """
-  A field to be indexed. 2-element tuple has the field name, followed by a
-  sorting strategy, :date or nil for simple sort.
+  A field to be indexed. 2-element tuple has the field name and options.
 
   ## Options
 

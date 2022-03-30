@@ -30,7 +30,7 @@ defmodule Indexed.Managed do
         def init(_), do: {:ok, warm(:cars, Repo.get(Car, 1))}
 
         @impl GenServer
-        def handle_call(:get, state) do
+        def handle_call(:get, _from state) do
           {:reply, get(state, :cars, 1)}
         end
 
@@ -202,6 +202,7 @@ defmodule Indexed.Managed do
   @typep state :: State.t()
   @typep id :: Indexed.id()
   @typep order_hint :: Indexed.order_hint()
+  @typep prefilter :: Indexed.prefilter()
   @typep record :: Indexed.record()
   @typep record_or_list :: [record] | record | nil
   @typep managed_or_name :: t | atom
@@ -304,7 +305,7 @@ defmodule Indexed.Managed do
   defmacro __before_compile__(%{module: mod}) do
     attr = &Module.get_attribute(mod, &1)
     Prepare.validate_before_compile!(mod, attr.(:managed_repo), attr.(:managed_setup))
-    Module.put_attribute(mod, :managed, Prepare.rewrite_managed(attr.(:managed_setup)))
+    Module.put_attribute(mod, :managed, Prepare.rewrite_manageds(attr.(:managed_setup)))
     Module.delete_attribute(mod, :managed_setup)
 
     quote do
@@ -373,12 +374,12 @@ defmodule Indexed.Managed do
           path
         ) ::
           state_or_wrapped
-  def manage(state, name, orig, new, path \\ nil) do
+  def manage(state, mon, orig, new, path \\ nil) do
     with_state(state, fn st ->
       %{id_key: id_key, name: name, manage_path: manage_path} =
         managed =
-        case name do
-          %{} -> name
+        case mon do
+          %{} -> mon
           name_atom -> get_managed(st, name_atom)
         end
 
@@ -400,6 +401,7 @@ defmodule Indexed.Managed do
       |> do_manage_top.(new_records, &add(&2, :top, managed, &1))
       |> do_manage_path.(new_records, :add)
       |> do_manage_finish()
+      |> Map.put(:tmp, nil)
     end)
   end
 
@@ -467,15 +469,12 @@ defmodule Indexed.Managed do
         put_tracking.(st, name, id, new_c)
     end
 
-    state =
-      Enum.reduce(state.tmp.tracking, state, fn {name, map}, acc ->
-        Enum.reduce(map, acc, fn {id, new_count}, acc2 ->
-          orig_count = tracking(state, name, id)
-          handle.(acc2, name, id, orig_count, new_count)
-        end)
+    Enum.reduce(state.tmp.tracking, state, fn {name, map}, acc ->
+      Enum.reduce(map, acc, fn {id, new_count}, acc2 ->
+        orig_count = tracking(state, name, id)
+        handle.(acc2, name, id, orig_count, new_count)
       end)
-
-    %{state | tmp: nil}
+    end)
   end
 
   # Remove a record according to its managed config and association to parent:
@@ -707,7 +706,7 @@ defmodule Indexed.Managed do
   end
 
   @doc "Invoke `Indexed.get_index/4` with a wrapped state for convenience."
-  @spec get_index(state_or_wrapped, atom, Indexed.prefilter()) :: list | map | nil
+  @spec get_index(state_or_wrapped, atom, prefilter) :: list | map | nil
   def get_index(state, name, prefilter \\ nil, order_hint \\ nil) do
     with_state(state, fn %{index: index} ->
       Indexed.get_index(index, name, prefilter, order_hint)
@@ -715,11 +714,28 @@ defmodule Indexed.Managed do
   end
 
   @doc "Invoke `Indexed.get_records/4` with a wrapped state for convenience."
-  @spec get_records(state_or_wrapped, atom, Indexed.prefilter() | nil, order_hint | nil) ::
+  @spec get_records(state_or_wrapped, atom, prefilter | nil, order_hint | nil) ::
           [record] | nil
   def get_records(state, name, prefilter \\ nil, order_hint \\ nil) do
     with_state(state, fn %{index: index} ->
       Indexed.get_records(index, name, prefilter, order_hint)
+    end)
+  end
+
+  @doc "Invoke `Indexed.get_uniques_map/4`."
+  @spec get_uniques_map(state_or_wrapped, atom, prefilter, atom) ::
+          UniquesBundle.counts_map() | nil
+  def get_uniques_map(state, name, prefilter, field_name) do
+    with_state(state, fn %{index: index} ->
+      Indexed.get_uniques_map(index, name, prefilter, field_name)
+    end)
+  end
+
+  @doc "Invoke `Indexed.get_uniques_list/4`."
+  @spec get_uniques_list(state_or_wrapped, atom, prefilter, atom) :: list | nil
+  def get_uniques_list(state, name, prefilter, field_name) do
+    with_state(state, fn %{index: index} ->
+      Indexed.get_uniques_list(index, name, prefilter, field_name)
     end)
   end
 

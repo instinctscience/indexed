@@ -1,6 +1,7 @@
 defmodule Indexed.Actions.Warm do
   @moduledoc "Holds internal state info during operations."
-  alias Indexed.{Entity, Helpers, UniquesBundle}
+  import Indexed.Helpers, only: [id: 2]
+  alias Indexed.{Entity, UniquesBundle}
   alias __MODULE__
   require Logger
 
@@ -78,7 +79,7 @@ defmodule Indexed.Actions.Warm do
           data_tuple = resolve_data_opt(opts[:data], entity_name, fields)
 
         # Load the records into ETS, keyed by :id or the :id_key field.
-        Enum.each(full_data, &:ets.insert(ref, {Helpers.id(&1, id_key), &1}))
+        Enum.each(full_data, &:ets.insert(ref, {id(&1, id_key), &1}))
 
         warm = %Warm{
           data_tuple: data_tuple,
@@ -268,6 +269,6 @@ defmodule Indexed.Actions.Warm do
   @doc "Return a list of all ids from the `collection`."
   @spec id_list([Indexed.record()], any) :: [Indexed.id()]
   def id_list(collection, id_key) do
-    Enum.map(collection, &Helpers.id(&1, id_key))
+    Enum.map(collection, &id(&1, id_key))
   end
 end

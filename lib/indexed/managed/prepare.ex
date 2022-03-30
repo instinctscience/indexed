@@ -10,9 +10,10 @@ defmodule Indexed.Managed.Prepare do
 
   * Set the `:tracked` option on the managed structs where another references it
     with a `:one` association.
+  * More things.
   """
-  @spec rewrite_managed([Managed.t()]) :: [Managed.t()]
-  def rewrite_managed(manageds) do
+  @spec rewrite_manageds([Managed.t()]) :: [Managed.t()]
+  def rewrite_manageds(manageds) do
     put_fn = fn k, fun -> &%{&1 | k => fun.(&1)} end
 
     map_put = fn mgs, k, fun ->
@@ -71,17 +72,17 @@ defmodule Indexed.Managed.Prepare do
       )
     end
 
-    manageds
-    |> Enum.reduce([], fn %{children: children}, acc ->
-      Enum.reduce(children, [], fn
-        {_k, {:many, ^name, pf_key, _}}, acc2 -> [pf_key | acc2]
-        _, acc2 -> acc2
-      end) ++ acc
-    end)
-    |> case do
-      [] -> prefilters
-      required -> finish.(required)
-    end
+    required =
+      Enum.reduce(manageds, [], fn %{children: children}, acc ->
+        Enum.reduce(children, [], fn
+          {_k, {:many, ^name, pf_key, _}}, acc2 -> [pf_key | acc2]
+          _, acc2 -> acc2
+        end) ++ acc
+      end)
+
+    if Enum.empty?(required),
+      do: prefilters,
+      else: finish.(required)
   end
 
   # If :fields is empty, use the id key or the first field given by Ecto.

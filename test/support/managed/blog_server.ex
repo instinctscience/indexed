@@ -17,6 +17,7 @@ defmodule BlogServer do
 
   managed :users, User,
     children: [:flare_pieces],
+    prefilters: [:name],
     subscribe: &Blog.subscribe_to_user/1,
     unsubscribe: &Blog.unsubscribe_from_user/1
 

@@ -10,7 +10,7 @@ defmodule Indexed.ManagedTest do
   defp preload, do: [:first_commenter, author: :flare_pieces, comments: [author: :flare_pieces]]
   defp state(bs_pid), do: :sys.get_state(bs_pid)
   defp tracking(bs_pid, name), do: Map.fetch!(state(bs_pid).tracking, name)
-  defp record(name, id, pl), do: BlogServer.run(& &1.get.(name, id, pl))
+  defp record(name, id, preload), do: BlogServer.run(& &1.get.(name, id, preload))
   defp records(name), do: BlogServer.run(& &1.get_records.(name))
   defp paginate, do: BlogServer.paginate(preload: preload())
   defp entries, do: paginate().entries
@@ -110,7 +110,7 @@ defmodule Indexed.ManagedTest do
              record(:comments, comment2_id, [:author, :post])
   end
 
-  test "update entity which has foreign one and many connections" do
+  test "update entity which has foreign one AND many connections" do
     %{bs_pid: _bs_pid} = basic_setup()
     %{id: comment_id} = entries() |> hd() |> Map.fetch!(:comments) |> hd()
     msg = "new stuff to say"

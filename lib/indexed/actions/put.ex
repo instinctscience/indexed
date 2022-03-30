@@ -29,8 +29,6 @@ defmodule Indexed.Actions.Put do
   """
   @spec run(Indexed.t(), atom, Indexed.record()) :: :ok
   def run(index, entity_name, %{} = record) do
-    %{fields: fields} = entity = Map.fetch!(index.entities, entity_name)
-
     put = %Put{
       entity_name: entity_name,
       index: index,
@@ -41,48 +39,63 @@ defmodule Indexed.Actions.Put do
     id = id(put)
     put = %{put | previous: Indexed.get(index, entity_name, id)}
 
-    Logger.debug("Putting into #{entity_name}: id #{id}")
+    do_run(put, id)
+  end
+
+  defp do_run(%{previous: record, record: record}, _) do
+    # Do nothing at all since we already hold this record exactly, unchanged.
+    :ok
+  end
+
+  defp do_run(%{entity_name: name, index: index} = put, id) do
+    Logger.debug("Putting into #{put.entity_name}: id #{id}")
+
+    %{fields: fields} = entity = Map.fetch!(index.entities, name)
 
     # Update the record itself (by id).
-    :ets.insert(entity.ref, {id, record})
+    :ets.insert(entity.ref, {id, put.record})
 
-    # Update indexes for each prefilter.
+    # Update indexes and uniques for each prefilter.
     Enum.each(entity.prefilters, fn
       {nil, pf_opts} ->
         update_index_for_fields(put, nil, fields, false)
         update_all_uniques(put, pf_opts[:maintain_unique] || [], nil, false)
 
       {pf_key, pf_opts} ->
-        Logger.debug("--> Getting UB for #{entity_name} prefilter nil, field: #{pf_key}")
+        Logger.debug("--> Getting UB for #{name} prefilter nil, field: #{pf_key}")
 
-        # Get global (prefilter nil) uniques bundle.
-        {map, list, _, _} = bundle = UniquesBundle.get(index, entity_name, nil, pf_key)
-        record_value = Map.get(record, pf_key)
-
-        handle_prefilter_value = fn value, new_value? ->
-          # This will be how it is known what the unique values this pf key are
-          # so users and machines alike can know which prefilters (key and val)
-          # actually exist!
-          update_uniques_for_global_prefilter(put, bundle, pf_key, value)
-
+        handle_prefilter_value = fn pnb, value, new_value? ->
           prefilter = {pf_key, value}
           update_index_for_fields(put, prefilter, fields, new_value?)
           update_all_uniques(put, pf_opts[:maintain_unique] || [], prefilter, new_value?)
+
+          # This will be how it is known what the unique values this pf key are
+          # so users and machines alike can know which prefilters (key and val)
+          # actually exist!
+          update_uniques_for_global_prefilter(put, pnb, pf_key, value)
         end
+
+        # Get global (prefilter nil) uniques bundle.
+        {map, list, _, _} = bundle = UniquesBundle.get(index, name, nil, pf_key)
+        record_value = Map.get(put.record, pf_key)
 
         # If record has a newly-seen prefilter value, add fresh indexes.
-        unless Map.has_key?(map, record_value) do
-          handle_prefilter_value.(record_value, true)
-        end
+        pf_nil_bundle =
+          if Map.has_key?(map, record_value),
+            do: bundle,
+            else: handle_prefilter_value.(bundle, record_value, true)
 
         # For each existing unique value for the prefilter field, update indexes.
-        Enum.each(list, fn value ->
-          handle_prefilter_value.(value, false)
-        end)
+        pf_nil_bundle =
+          Enum.reduce(list, pf_nil_bundle, fn value, pnb ->
+            handle_prefilter_value.(pnb, value, false)
+          end)
+
+        UniquesBundle.put(pf_nil_bundle, index.index_ref, name, nil, pf_key)
     end)
 
     # Update the data for each view.
-    with views when is_map(views) <- Indexed.get_views(index, entity_name) do
+    with views when is_map(views) <- Indexed.get_views(index, name) do
       Enum.each(views, fn {fp, view} ->
         update_view_data(%{put | current_view: view}, fp)
       end)
@@ -96,8 +109,6 @@ defmodule Indexed.Actions.Put do
   @spec update_all_uniques(t, [atom], Indexed.prefilter(), boolean) :: :ok
   defp update_all_uniques(put, maintain_unique, prefilter, new_value?) do
     Enum.each(maintain_unique, fn field_name ->
-      Logger.debug("--> Updating uniques for PF #{inspect(prefilter)}, field: #{field_name}")
-
       prev_in_pf? = !!(put.previous && under_prefilter?(put, put.previous, prefilter))
       this_in_pf? = under_prefilter?(put, put.record, prefilter)
 
@@ -148,30 +159,27 @@ defmodule Indexed.Actions.Put do
   # Get and update global (prefilter nil) uniques for the field_name.
   # These field_names would be used as prefilter keys when querying prefilters.
   # `value` is the current global prefilter value being iterated over.
-  @spec update_uniques_for_global_prefilter(t, UniquesBundle.t(), atom, any) :: :ok
+  @spec update_uniques_for_global_prefilter(t, UniquesBundle.t(), atom, any) :: UniquesBundle.t()
   defp update_uniques_for_global_prefilter(put, bundle, field_name, value) do
     prev_value = put.previous && Map.get(put.previous, field_name)
     new_value = Map.get(put.record, field_name)
-    put_bundle = &UniquesBundle.put(&1, put.index.index_ref, put.entity_name, nil, field_name)
 
     cond do
       put.previous && prev_value == new_value ->
         # For this prefilter key, record hasn't moved. Do nothing.
-        nil
+        bundle
 
       put.previous && prev_value == value ->
         # Record was moved to another prefilter. Remove it from this one.
-        bundle |> UniquesBundle.remove(value) |> put_bundle.()
+        UniquesBundle.remove(bundle, value)
 
       new_value == value ->
         # Record was moved to this prefilter. Add it.
-        bundle |> UniquesBundle.add(value) |> put_bundle.()
+        UniquesBundle.add(bundle, value)
 
       true ->
-        nil
+        bundle
     end
-
-    :ok
   end
 
   # Update id indexes for each field under the prefilter.
@@ -225,7 +233,7 @@ defmodule Indexed.Actions.Put do
     desc_key = Indexed.index_key(put.entity_name, prefilter, {:desc, field_name})
 
     desc_ids = fn desc_key ->
-      if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key)
+      if newly_seen_value?, do: [], else: Indexed.get_index(put.index, desc_key, [])
     end
 
     new_desc_ids =
@@ -234,8 +242,13 @@ defmodule Indexed.Actions.Put do
         :add, dids -> insert_by(put, dids, field)
       end)
 
-    :ets.insert(put.index.index_ref, {desc_key, new_desc_ids})
-    :ets.insert(put.index.index_ref, {asc_key, Enum.reverse(new_desc_ids)})
+    go = fn
+      key, [] -> :ets.delete(put.index.index_ref, key)
+      key, idx -> :ets.insert(put.index.index_ref, {key, idx})
+    end
+
+    go.(desc_key, new_desc_ids)
+    go.(asc_key, Enum.reverse(new_desc_ids))
 
     :ok
   end
