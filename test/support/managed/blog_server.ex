@@ -7,9 +7,11 @@ defmodule BlogServer do
   @user_preloads [:best_friend, :flare_pieces]
 
   managed :posts, Post,
-    children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
+    children: [:author, comments: [order_by: :inserted_at]],
+    # children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
     fields: [:inserted_at],
-    manage_path: [:first_commenter, author: @user_preloads, comments: [author: @user_preloads]],
+    manage_path: [author: @user_preloads, comments: [author: @user_preloads]],
+    # manage_path: [:first_commenter, author: @user_preloads, comments: [author: @user_preloads]],
     query: &Blog.post_with_first_commenter_id_query/1
 
   managed :comments, Comment,
@@ -49,8 +51,8 @@ defmodule BlogServer do
 
     {:ok,
      init_managed_state()
-     |> warm(:posts, posts)
-     |> warm(:replies, replies, :comment)}
+     |> warm(:posts, posts)}
+    #  |> warm(:replies, replies, :comment)}
   end
 
   @impl GenServer
@@ -97,6 +99,13 @@ defmodule BlogServer do
     else
       {:error, _cs} = err -> {:reply, err, state}
       _ -> {:reply, :error, state}
+    end
+  end
+
+  def handle_call({:forget_post, post_id}, _from, state) do
+    case get(state, :posts, post_id) do
+      nil -> {:reply, :error, state}
+      post -> {:reply, :ok, manage(state, :posts, :delete, post)}
     end
   end
 

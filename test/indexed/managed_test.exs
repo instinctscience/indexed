@@ -7,7 +7,9 @@ defmodule Indexed.ManagedTest do
     :ok
   end
 
-  defp preload, do: [:first_commenter, author: :flare_pieces, comments: [author: :flare_pieces]]
+  @user_preload [:best_friend, :flare_pieces]
+
+  defp preload, do: [:first_commenter, author: @user_preload, comments: [author: @user_preload]]
   defp state(bs_pid), do: :sys.get_state(bs_pid)
   defp tracking(bs_pid, name), do: Map.fetch!(state(bs_pid).tracking, name)
   defp record(name, id, preload), do: BlogServer.run(& &1.get.(name, id, preload))
@@ -154,6 +156,69 @@ defmodule Indexed.ManagedTest do
     assert %{content: "Hello World", author: %{name: "bob"}} = entry.()
     assert {:ok, _} = Blog.update_user(bob, %{name: "not bob"})
     assert %{content: "Hello World", author: %{name: "not bob"}} = entry.()
+  end
+
+  test "delete a post" do
+    %{bs_pid: bs_pid} = basic_setup()
+
+    # assert [
+    #          %{
+    #            id: post_id,
+    #            content: "My post is the best.",
+    #            author: %{name: "bob", best_friend: %{name: "lucy"}}
+    #          },
+    #          %{content: "Hello World", author: %{name: "bob"}}
+    #        ] = entries()
+
+    assert [
+             %{
+               author: %{
+                 name: "bob",
+                 best_friend: %{name: "lucy"},
+                 flare_pieces: [%{name: "pin"}]
+               },
+               content: "My post is the best."
+             },
+             %{
+               id: post_id,
+               author: %{name: "bob"},
+               content: "Hello World"
+             }
+           ] = entries()
+
+    state(bs_pid).tracking
+    |> IO.inspect(label: "pre tracking")
+
+    IO.inspect(label: "READDDDYYYY")
+    Blog.forget_post(post_id)
+
+    records(:flare_pieces)
+    |> IO.inspect(label: "deel")
+
+    state = state(bs_pid)
+
+    records(:users)
+    |> Enum.map(&Indexed.Managed.preload(&1, state, [:best_friend, :flare_pieces]))
+    |> IO.inspect(label: "usej")
+
+    assert [
+             %{
+               content: "My post is the best.",
+               author: %{
+                 name: "bob",
+                 best_friend: %{name: "lucy"},
+                 flare_pieces: [%{name: "pin"}]
+               }
+             }
+           ] = entries()
+
+    # state(bs_pid).tracking
+    # records(:users)
+    entries()
+    |> IO.inspect(label: "deel")
+
+    records(:flare_pieces)
+    |> IO.inspect(label: "flarepie")
   end
 
   @tag :skip

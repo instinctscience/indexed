@@ -495,7 +495,17 @@ defmodule Indexed.Managed do
         add_tmp_rm_id(state, parent_info, id)
 
       {cur, _} when cur > 0 ->
-        put_tmp_tracking(state, name, id, cur - 1)
+        IO.inspect(label: "putting for #{name} #{id}")
+        IO.inspect(state.tmp.tracking, label: "befo")
+        state = put_tmp_tracking(state, name, id, cur - 1)
+        IO.inspect(state.tmp.tracking, label: "afta")
+        state
+
+      bad ->
+        IO.inspect(record, label: "crap nameid(#{name}, #{id}) #{inspect bad}")
+        IO.inspect(state.tracking, label: "track")
+        IO.inspect(state.tmp.tracking, label: "tmptratrack")
+        state
     end
   end
 
@@ -515,7 +525,9 @@ defmodule Indexed.Managed do
         subtract_tmp_rm_id(state, :top, id)
 
       nil ->
+        IO.inspect({id, state.tmp.tracking}, label: "bbef")
         state = put_tmp_tracking(state, name, id, &(&1 + 1))
+        IO.inspect({id, state.tmp.tracking}, label: "aaft")
         put_tmp_record(state, name, id, record)
 
       info ->
@@ -531,6 +543,7 @@ defmodule Indexed.Managed do
       %{children: children} = get_managed(acc.module, name)
       spec = Map.fetch!(children, path_entry)
 
+      IO.inspect({name, path_entry, spec, action, records}, label: "do_manage_path")
       do_manage_assoc(acc, name, path_entry, spec, action, records, sub_path)
     end)
   end

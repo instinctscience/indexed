@@ -82,9 +82,8 @@ defmodule Blog do
     user |> User.changeset(params) |> Repo.update() |> broadcast([:user, :update])
   end
 
-  def delete_comment(comment_id) do
-    BlogServer.call({:delete_comment, comment_id})
-  end
+  def forget_post(post_id), do: BlogServer.call({:forget_post, post_id})
+  def delete_comment(comment_id), do: BlogServer.call({:delete_comment, comment_id})
 
   # If a feedback pid is registered for the current process, send it a message.
   def maybe_send(msg) do
