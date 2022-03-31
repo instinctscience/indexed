@@ -13,6 +13,10 @@ defmodule Indexed.Managed.State do
   @typedoc """
   Data structure used to hold temporary data while running `manage/5`.
 
+  * `:done_ids` - Entity name-keyed map with lists of record IDs which have been
+    processed during the `:add` or `:remove` phases because another entity has
+    :one of them. This allows us to skip processing it next time(s) if it
+    appears elsewhere. Only used during a phase -- emptied in between.
   * `:records` - Records which may be committed to ETS at the end of the
     operation. Outer map is keyed by entity name. Inner map is keyed by record
     id.
@@ -25,6 +29,7 @@ defmodule Indexed.Managed.State do
     copied from State and manipulated as needed within this structure.
   """
   @type tmp :: %{
+          done_ids: %{atom => [id]},
           records: %{atom => %{id => record}},
           rm_ids: %{atom => %{id => %{atom => [id]}}},
           top_name: atom,
@@ -33,6 +38,12 @@ defmodule Indexed.Managed.State do
         }
 
   @typedoc """
+  * `:index` - Indexed struct. Static after created via `Indexed.warm/1`.
+  * `:module` - Module which has `use Indexed.Managed`.
+  * `:repo` - Ecto Repo module to use for loading data.
+  * `:tmp` - Data structure used internally during a call to `manage/5`.
+    Usually `nil`.
+  * `:tracking` - Data about how many :one refs there are to a certain entity.
   """
   @type t :: %State{
           index: Indexed.t() | nil,
@@ -50,8 +61,8 @@ defmodule Indexed.Managed.State do
   @type tracking :: %{atom => tracking_status}
 
   @typedoc """
-  Map of tracked record ids to occurrences throughout the records held.
-  Used to manage subscriptions.
+  Map of tracked record IDs to occurrences throughout the records held.
+  Used to manage subscriptions and garbage collection.
   """
   @type tracking_status :: %{id => non_neg_integer}
 
@@ -61,26 +72,47 @@ defmodule Indexed.Managed.State do
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
   @spec init(module, module) :: t
   def init(mod, repo) do
-    %State{module: mod, repo: repo, tracking: init_tracking(mod)}
+    %State{module: mod, repo: repo, tracking: tracking_keyed_map(mod)}
   end
 
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
   @spec init_tmp(t, atom) :: t
   def init_tmp(%{module: mod} = state, name) do
-    records = Map.new(mod.__tracked__(), &{&1, %{}})
+    empty = tracking_keyed_map(mod)
 
     %{
       state
       | tmp: %{
-          records: records,
+          done_ids: empty,
+          records: empty,
           rm_ids: %{},
           top_name: name,
           top_rm_ids: [],
-          tracking: init_tracking(mod)
+          tracking: tracking_keyed_map(mod)
         }
     }
   end
 
-  @spec init_tracking(module) :: map
-  defp init_tracking(mod), do: Map.new(mod.__tracked__(), &{&1, %{}})
+  @doc "Reset `:done_ids` inside `:tmp`."
+  @spec reset_tmp_done_ids(t) :: t
+  def reset_tmp_done_ids(%{module: mod} = state) do
+    put_in(state, [Access.key(:tmp), :done_ids], tracking_keyed_map(mod))
+  end
+
+  @doc "Get `ids` list for `module` in tmp's done_ids."
+  @spec tmp_done_ids(t, module) :: [id]
+  def tmp_done_ids(state, module) do
+    get_in(state, [Access.key(:tmp), :done_ids, module]) || []
+  end
+
+  @doc "Add `ids` list for `module` in tmp's done_ids."
+  @spec add_tmp_done_ids(t, module, [id]) :: t
+  def add_tmp_done_ids(state, module, ids) do
+    fun = &Kernel.++(&1 || [], ids)
+    update_in(state, [Access.key(:tmp), :done_ids, module], fun)
+  end
+
+  # Make a map of maps keyed by all tracked entity names.
+  @spec tracking_keyed_map(module) :: map
+  defp tracking_keyed_map(mod), do: Map.new(mod.__tracked__(), &{&1, %{}})
 end

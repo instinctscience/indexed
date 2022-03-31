@@ -398,6 +398,7 @@ defmodule Indexed.Managed do
       |> State.init_tmp(name)
       |> do_manage_top.(orig_records, &rm(&2, :top, managed, &1))
       |> do_manage_path.(orig_records, :rm)
+      |> State.reset_tmp_done_ids()
       |> do_manage_top.(new_records, &add(&2, :top, managed, &1))
       |> do_manage_path.(new_records, :add)
       |> do_manage_finish()
@@ -502,7 +503,7 @@ defmodule Indexed.Managed do
         state
 
       bad ->
-        IO.inspect(record, label: "crap nameid(#{name}, #{id}) #{inspect bad}")
+        IO.inspect(record, label: "crap nameid(#{name}, #{id}) #{inspect(bad)}")
         IO.inspect(state.tracking, label: "track")
         IO.inspect(state.tmp.tracking, label: "tmptratrack")
         state
@@ -561,7 +562,13 @@ defmodule Indexed.Managed do
          records,
          sub_path
        ) do
-    %{id_key: assoc_id_key} = assoc_managed = get_managed(state, assoc_name)
+    %{id_key: assoc_id_key, module: assoc_mod} = assoc_managed = get_managed(state, assoc_name)
+    # maybe = &if(&1 in done_ids, do: [], else: [&2])
+
+    # add = fn
+    #   nil, id, {recs, ids} -> {recs, maybe.(id, id) ++ ids}
+    #   rec, id, {recs, ids} -> {maybe.(id, rec) ++ recs, ids}
+    # end
 
     {assoc_records, assoc_ids} =
       Enum.reduce(records, {[], []}, fn record, {acc_assoc_records, acc_assoc_ids} ->
@@ -591,9 +598,19 @@ defmodule Indexed.Managed do
     add = &add(&2, nil, assoc_managed, &1)
     state = Enum.reduce(assoc_records, state, add)
     state = Enum.reduce(assoc_ids, state, &add.(Map.fetch!(from_db_map, &1), &2))
-    assoc_records = assoc_records ++ from_db
 
-    do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
+    # Continue managing all children EXCEPT those in :done_ids.
+    done_ids = State.tmp_done_ids(state, assoc_mod)
+
+    {assoc_doing, assoc_doing_ids} =
+      Enum.reduce(assoc_records ++ from_db, {[], []}, fn rec, {ad, adi} ->
+        id = id(rec, assoc_id_key)
+        if id in done_ids, do: {ad, adi}, else: {[rec | ad], [id | adi]}
+      end)
+
+    state
+    |> State.add_tmp_done_ids(assoc_mod, assoc_doing_ids)
+    |> do_manage_path(assoc_name, :add, assoc_doing, sub_path)
   end
 
   # *** MANY ADD - these records have a `has_many :assoc_name` association.
@@ -644,21 +661,31 @@ defmodule Indexed.Managed do
          records,
          sub_path
        ) do
-    %{name: assoc_name} = assoc_managed = get_managed(state, assoc_name)
+    %{id_key: assoc_id_key, module: assoc_mod, name: assoc_name} =
+      assoc_managed = get_managed(state, assoc_name)
 
-    {state, assoc_records} =
-      Enum.reduce(records, {state, []}, fn record, {acc_state, acc_assoc_records} ->
+    done_ids = State.tmp_done_ids(state, assoc_mod)
+
+    maybe = fn assoc, {doing, doing_ids} = acc ->
+      id = id(assoc, assoc_id_key)
+      if id in done_ids, do: acc, else: {[assoc | doing], [id | doing_ids]}
+    end
+
+    {state, {assoc_doing, assoc_doing_ids}} =
+      Enum.reduce(records, {state, {[], []}}, fn record, {acc_state, acc_d} ->
         case Map.fetch!(record, fkey) do
           nil ->
-            {acc_state, acc_assoc_records}
+            {acc_state, acc_d}
 
           assoc_id ->
             assoc = get(acc_state, assoc_name, assoc_id)
-            {rm(acc_state, nil, assoc_managed, assoc), [assoc | acc_assoc_records]}
+            {rm(acc_state, nil, assoc_managed, assoc), maybe.(assoc, acc_d)}
         end
       end)
 
-    do_manage_path(state, assoc_name, :rm, assoc_records, sub_path)
+    state
+    |> State.add_tmp_done_ids(assoc_mod, assoc_doing_ids)
+    |> do_manage_path(assoc_name, :rm, assoc_doing, sub_path)
   end
 
   # *** MANY RM - these records have a `has_many :assoc_name` association.

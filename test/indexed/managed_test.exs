@@ -83,14 +83,14 @@ defmodule Indexed.ManagedTest do
            ] = entries()
 
     assert [%{name: "fred"}, %{name: "jill"}, %{name: "lee"}, %{name: "lucy"}] = records(:users)
-    assert %{^bob_id => 5, ^jill_id => 2, ^lee_id => 1} = tracking(bs_pid, :users)
+    assert %{^bob_id => 4, ^jill_id => 1, ^lee_id => 1, ^lucy_id => 1} = tracking(bs_pid, :users)
 
     {:ok, _} = Blog.delete_comment(comment_id)
 
     msg = "user-#{jill_id}"
     assert_receive [:unsubscribe, ^msg]
     assert [%{name: "fred"}, %{name: "lee"}, %{name: "lucy"}] = records(:users)
-    assert %{bob_id => 5, lee_id => 2, lucy_id => 2} == tracking(bs_pid, :users)
+    assert %{bob_id => 4, lee_id => 1, lucy_id => 1} == tracking(bs_pid, :users)
     assert [%{comments: [%{content: "woah"}]}, %{comments: [_, _]}] = entries()
 
     refute Enum.any?(records(:flare_pieces), &(&1.name in ~w(hat mitten)))
@@ -186,14 +186,16 @@ defmodule Indexed.ManagedTest do
              }
            ] = entries()
 
-    state(bs_pid).tracking
-    |> IO.inspect(label: "pre tracking")
+    state(bs_pid).tracking |> IO.inspect(label: "pre tracking")
+
+    entries() |> IO.inspect(label: "EEEEEENNNN")
 
     IO.inspect(label: "READDDDYYYY")
     Blog.forget_post(post_id)
 
-    records(:flare_pieces)
-    |> IO.inspect(label: "deel")
+    state(bs_pid).tracking |> IO.inspect(label: "post tracking")
+
+    records(:flare_pieces) |> IO.inspect(label: "deel")
 
     state = state(bs_pid)
 
@@ -208,7 +210,14 @@ defmodule Indexed.ManagedTest do
                  name: "bob",
                  best_friend: %{name: "lucy"},
                  flare_pieces: [%{name: "pin"}]
-               }
+               },
+               comments: [
+                 %{author: %{name: "lee", flare_pieces: [%{name: "wig"}]}, content: "woah"},
+                 %{
+                   author: %{name: "jill", flare_pieces: [%{name: "hat"}, %{name: "mitten"}]},
+                   content: "wow"
+                 }
+               ]
              }
            ] = entries()
 

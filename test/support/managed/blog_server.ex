@@ -52,6 +52,7 @@ defmodule BlogServer do
     {:ok,
      init_managed_state()
      |> warm(:posts, posts)}
+
     #  |> warm(:replies, replies, :comment)}
   end
 
@@ -117,8 +118,8 @@ defmodule BlogServer do
       comment ->
         {:reply, {:ok, _} = Repo.delete(comment),
          state
-         |> manage(:comments, :delete, comment)
-         |> manage(:posts, :update, Blog.get_post(comment.post_id), :first_commenter)}
+         |> manage(:comments, :delete, comment)}
+        #  |> manage(:posts, :update, Blog.get_post(comment.post_id), :first_commenter)}
     end
   end
 
