@@ -450,7 +450,6 @@ defmodule Indexed.Managed do
           st
 
         {spath, rec} ->
-          IO.inspect({spath, rec}, label: "YOO")
           drop(st, name, id)
           do_manage_path(st, name, :rm, [rec], spath, true)
       end
@@ -479,8 +478,7 @@ defmodule Indexed.Managed do
     end
 
     state =
-      Enum.reduce(state.tmp.tracking |> IO.inspect(label: "trAcking"), state, fn {name, map},
-                                                                                 acc ->
+      Enum.reduce(state.tmp.tracking, state, fn {name, map}, acc ->
         Enum.reduce(map, acc, fn {id, new_count}, acc2 ->
           orig_count = State.tracking(state, name, id)
           handle.(acc2, name, id, orig_count, new_count)
@@ -508,10 +506,7 @@ defmodule Indexed.Managed do
         State.add_tmp_rm_id(state, :top, id)
 
       {_, {_, _, _} = parent_info} ->
-        IO.inspect(parent_info, label: "pareinfo")
-        st = State.add_tmp_rm_id(state, parent_info, id)
-        IO.inspect(st.tmp.rm_ids, label: "tmprm")
-        st
+        State.add_tmp_rm_id(state, parent_info, id)
 
       {cur, _} when cur > 0 ->
         state = State.put_tmp_tracking(state, name, id, cur - 1)
@@ -552,7 +547,6 @@ defmodule Indexed.Managed do
       %{children: children} = get_managed(acc.module, name)
       spec = Map.fetch!(children, path_entry)
 
-      IO.inspect({name, path_entry, spec, action, records}, label: "do_manage_path")
       do_manage_assoc(acc, name, path_entry, spec, action, records, sub_path, execute?)
     end)
   end
@@ -587,7 +581,6 @@ defmodule Indexed.Managed do
             end
         end
       end)
-      IO.inspect(assoc_ids, label: "associds")
 
     {from_db, from_db_map} =
       if [] == assoc_ids do
@@ -599,7 +592,6 @@ defmodule Indexed.Managed do
         from_db = state.repo.all(query)
         {from_db, Map.new(from_db, &{Map.fetch!(&1, assoc_id_key), &1})}
       end
-      |> IO.inspect(label: "yooo")
 
     add = &add(&2, nil, assoc_managed, &1)
     state = Enum.reduce(assoc_records, state, add)
@@ -616,13 +608,11 @@ defmodule Indexed.Managed do
         id = id(rec, assoc_id_key)
 
         rm_recurse = fn rec, spath ->
-          IO.inspect(spath, label: "CHAA RECURSE")
           st
           |> State.subtract_one_rm_queue(assoc_name, id)
           |> do_manage_path(assoc_name, :rm, [rec], spath)
         end
 
-        IO.inspect({id not in done_ids, rm_queue[id]}, label: "CHICKEN")
         case id not in done_ids && rm_queue[id] do
           false -> {st, ad, adi}
           nil -> {st, [rec | ad], [id | adi]}
@@ -708,7 +698,6 @@ defmodule Indexed.Managed do
       end)
 
     if execute? do
-      IO.inspect({assoc_name, :rm, sub_path, Map.values(assoc_doing_map)}, label: "WHATUP")
       do_manage_path(state, assoc_name, :rm, Map.values(assoc_doing_map), sub_path)
     else
       state
@@ -742,7 +731,6 @@ defmodule Indexed.Managed do
         {acc_state, assoc_records ++ acc_assoc_records}
       end)
 
-    IO.inspect({assoc_name, sub_path, assoc_records}, label: "OKOKOK")
     do_manage_path(state, assoc_name, :rm, assoc_records, sub_path)
   end
 
@@ -795,7 +783,7 @@ defmodule Indexed.Managed do
 
   @doc "Invoke `Indexed.get_uniques_map/4`."
   @spec get_uniques_map(state_or_wrapped, atom, prefilter, atom) ::
-          UniquesBundle.counts_map() | nil
+          Indexed.UniquesBundle.counts_map() | nil
   def get_uniques_map(state, name, prefilter, field_name) do
     with_state(state, fn %{index: index} ->
       Indexed.get_uniques_map(index, name, prefilter, field_name)

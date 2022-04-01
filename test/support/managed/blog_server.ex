@@ -7,15 +7,15 @@ defmodule BlogServer do
   @user_preloads [:best_friend, :flare_pieces]
 
   managed :posts, Post,
-    children: [:author, comments: [order_by: :inserted_at]],
-    # children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
+    # children: [:author, comments: [order_by: :inserted_at]],
+    children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
     fields: [:inserted_at],
-    manage_path: [author: @user_preloads, comments: [author: @user_preloads]],
-    # manage_path: [
-    #   first_commenter: @user_preloads,
-    #   author: @user_preloads,
-    #   comments: [author: @user_preloads]
-    # ],
+    # manage_path: [author: @user_preloads, comments: [author: @user_preloads]],
+    manage_path: [
+      first_commenter: @user_preloads,
+      author: @user_preloads,
+      comments: [author: @user_preloads]
+    ],
     query: &Blog.post_with_first_commenter_id_query/1
 
   managed :comments, Comment,
@@ -53,29 +53,10 @@ defmodule BlogServer do
     posts = Blog.all_posts()
     replies = Blog.all_replies(this_blog: true)
 
-    st = init_managed_state() |> warm(:posts, posts)
-    IO.inspect(get_records(st, :users), label: "recc")
-
-    opts = [preload: __managed__(:posts).manage_path]
-
-    defaults = [
-      order_by: :inserted_at,
-      prepare: &preload(&1, st, opts[:preload] || [])
-    ]
-
-    get_records(st, :flare_pieces)
-    opts = Keyword.merge(defaults, opts)
-
-    page =
-      Indexed.paginate(st.index, :posts, opts)
-      |> IO.inspect(label: "sup")
-
-    {:ok, st}
-    # {:ok,
-    #  init_managed_state()
-    #  |> warm(:posts, posts)}
-
-    #  |> warm(:replies, replies, :comment)}
+    {:ok,
+     init_managed_state()
+     |> warm(:posts, posts)
+     |> warm(:replies, replies, :comment)}
   end
 
   @impl GenServer
@@ -140,9 +121,10 @@ defmodule BlogServer do
       comment ->
         {:reply, {:ok, _} = Repo.delete(comment),
          state
-         |> manage(:comments, :delete, comment)}
-
-        #  |> manage(:posts, :update, Blog.get_post(comment.post_id), :first_commenter)}
+         |> manage(:comments, :delete, comment)
+         |> manage(:posts, :update, Blog.get_post(comment.post_id),
+           first_commenter: @user_preloads
+         )}
     end
   end
 
