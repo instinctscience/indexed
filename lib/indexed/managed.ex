@@ -445,8 +445,8 @@ defmodule Indexed.Managed do
     put_tracking = &put_in(&1, [trk, &2, &3], &4)
     get_tmp_record = &get_in(state.tmp.records, [&1, &2])
 
-    drop_top_rm_ids(state)
-    drop_rm_ids(state)
+    State.drop_top_rm_ids(state)
+    State.drop_rm_ids(state)
 
     # TODO: If I delete a record here, I might need to delete other connected records.
     # ... shouldn't matter if manage's path param is deep enough.
@@ -472,7 +472,7 @@ defmodule Indexed.Managed do
 
     Enum.reduce(state.tmp.tracking, state, fn {name, map}, acc ->
       Enum.reduce(map, acc, fn {id, new_count}, acc2 ->
-        orig_count = tracking(state, name, id)
+        orig_count = State.tracking(state, name, id)
         handle.(acc2, name, id, orig_count, new_count)
       end)
     end)
@@ -486,19 +486,19 @@ defmodule Indexed.Managed do
   @spec rm(state, parent_info, t, record) :: state
   defp rm(state, parent_info, %{id_key: id_key, name: name}, record) do
     id = id(record, id_key)
-    cur = tmp_tracking(state, name, id)
+    cur = State.tmp_tracking(state, name, id)
 
     case {cur, parent_info} do
       {_, :top} ->
-        add_tmp_rm_id(state, :top, id)
+        State.add_tmp_rm_id(state, :top, id)
 
       {_, {_, _, _} = parent_info} ->
-        add_tmp_rm_id(state, parent_info, id)
+        State.add_tmp_rm_id(state, parent_info, id)
 
       {cur, _} when cur > 0 ->
         IO.inspect(label: "putting for #{name} #{id}")
         IO.inspect(state.tmp.tracking, label: "befo")
-        state = put_tmp_tracking(state, name, id, cur - 1)
+        state = State.put_tmp_tracking(state, name, id, cur - 1)
         IO.inspect(state.tmp.tracking, label: "afta")
         state
 
@@ -523,17 +523,17 @@ defmodule Indexed.Managed do
     case parent_info do
       :top ->
         put(state, name, record)
-        subtract_tmp_rm_id(state, :top, id)
+        State.subtract_tmp_rm_id(state, :top, id)
 
       nil ->
         IO.inspect({id, state.tmp.tracking}, label: "bbef")
-        state = put_tmp_tracking(state, name, id, &(&1 + 1))
+        state = State.put_tmp_tracking(state, name, id, &(&1 + 1))
         IO.inspect({id, state.tmp.tracking}, label: "aaft")
-        put_tmp_record(state, name, id, record)
+        State.put_tmp_record(state, name, id, record)
 
       info ->
         put(state, name, record)
-        subtract_tmp_rm_id(state, info, id)
+        State.subtract_tmp_rm_id(state, info, id)
     end
   end
 
@@ -562,7 +562,7 @@ defmodule Indexed.Managed do
          records,
          sub_path
        ) do
-    %{id_key: assoc_id_key, module: assoc_mod} = assoc_managed = get_managed(state, assoc_name)
+    %{id_key: assoc_id_key} = assoc_managed = get_managed(state, assoc_name)
     # maybe = &if(&1 in done_ids, do: [], else: [&2])
 
     # add = fn
@@ -600,7 +600,7 @@ defmodule Indexed.Managed do
     state = Enum.reduce(assoc_ids, state, &add.(Map.fetch!(from_db_map, &1), &2))
 
     # Continue managing all children EXCEPT those in :done_ids.
-    done_ids = State.tmp_done_ids(state, assoc_mod)
+    done_ids = State.tmp_done_ids(state, assoc_name)
 
     {assoc_doing, assoc_doing_ids} =
       Enum.reduce(assoc_records ++ from_db, {[], []}, fn rec, {ad, adi} ->
@@ -609,7 +609,7 @@ defmodule Indexed.Managed do
       end)
 
     state
-    |> State.add_tmp_done_ids(assoc_mod, assoc_doing_ids)
+    |> State.add_tmp_done_ids(assoc_name, assoc_doing_ids)
     |> do_manage_path(assoc_name, :add, assoc_doing, sub_path)
   end
 
@@ -661,10 +661,9 @@ defmodule Indexed.Managed do
          records,
          sub_path
        ) do
-    %{id_key: assoc_id_key, module: assoc_mod, name: assoc_name} =
-      assoc_managed = get_managed(state, assoc_name)
+    %{id_key: assoc_id_key} = assoc_managed = get_managed(state, assoc_name)
 
-    done_ids = State.tmp_done_ids(state, assoc_mod)
+    done_ids = State.tmp_done_ids(state, assoc_name)
 
     maybe = fn assoc, {doing, doing_ids} = acc ->
       id = id(assoc, assoc_id_key)
@@ -684,7 +683,7 @@ defmodule Indexed.Managed do
       end)
 
     state
-    |> State.add_tmp_done_ids(assoc_mod, assoc_doing_ids)
+    |> State.add_tmp_done_ids(assoc_name, assoc_doing_ids)
     |> do_manage_path(assoc_name, :rm, assoc_doing, sub_path)
   end
 

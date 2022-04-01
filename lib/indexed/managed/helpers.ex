@@ -5,7 +5,6 @@ defmodule Indexed.Managed.Helpers do
 
   @typep assoc_spec :: M.assoc_spec()
   @typep id :: Indexed.id()
-  @typep parent_info :: M.parent_info()
   @typep record :: Indexed.record()
   @typep state :: M.State.t()
 
@@ -36,55 +35,6 @@ defmodule Indexed.Managed.Helpers do
     end)
   end
 
-  # Drop from the index all records in
-  @spec drop_rm_ids(state) :: :ok
-  def drop_rm_ids(%{module: mod, tmp: %{rm_ids: rm_ids}} = state) do
-    Enum.each(rm_ids, fn {parent_name, map} ->
-      Enum.each(map, fn {_parent_id, map2} ->
-        Enum.each(map2, fn {path_entry, ids} ->
-          with %{^path_entry => {:many, name, _, _}} <- mod.__managed__(parent_name).children,
-               do: Enum.each(ids, &M.drop(state, name, &1))
-        end)
-      end)
-    end)
-  end
-
-  # Drop from the index all records in tmp.top_rm_ids.
-  @spec drop_top_rm_ids(state) :: :ok
-  def drop_top_rm_ids(%{tmp: %{top_name: name, top_rm_ids: ids}} = state) do
-    Enum.each(ids, &M.drop(state, name, &1))
-  end
-
-  # Remove an assoc id from tmp.rm_ids.
-  @spec subtract_tmp_rm_id(state, parent_info, id) :: state
-  def subtract_tmp_rm_id(state, :top, id) do
-    update_in(state, [Access.key(:tmp), :top_rm_ids], fn
-      nil -> []
-      l -> l -- [id]
-    end)
-  end
-
-  def subtract_tmp_rm_id(state, parent_info, id) do
-    update_in_tmp_rm_id(state, parent_info, &(&1 -- [id]))
-  end
-
-  # Add an assoc id into tmp.rm_ids.
-  @spec add_tmp_rm_id(state, parent_info, id) :: state
-  def add_tmp_rm_id(state, :top, id) do
-    update_in(state, [Access.key(:tmp), :top_rm_ids], &[id | &1 || []])
-  end
-
-  def add_tmp_rm_id(state, parent_info, id) do
-    update_in_tmp_rm_id(state, parent_info, &[id | &1 || []])
-  end
-
-  def update_in_tmp_rm_id(state, {a, b, c}, fun) do
-    m = &Access.key(&1, %{})
-    keys = [m.(a), m.(b), Access.key(c, [])]
-    rm_ids = update_in(state.tmp.rm_ids, keys, fun)
-    put_in(state, [Access.key(:tmp), :rm_ids], rm_ids)
-  end
-
   # Get the foreign key for the `path_entry` field of `module`.
   @spec get_fkey(module, atom) :: atom
   def get_fkey(module, path_entry) do
@@ -98,39 +48,6 @@ defmodule Indexed.Managed.Helpers do
 
   def build_query(%{module: assoc_mod, query: query_fn}),
     do: query_fn.(assoc_mod)
-
-  # Get the tracking (number of references) for the given entity and id.
-  @spec tracking(map, atom, any) :: non_neg_integer
-  def tracking(%{tracking: tracking}, name, id),
-    do: get_in(tracking, [name, id]) || 0
-
-  # Get the tmp tracking (number of references) for the given entity and id.
-  @spec tmp_tracking(map, atom, any) :: non_neg_integer
-  def tmp_tracking(%{tmp: %{tracking: tt}, tracking: t}, name, id) do
-    get = &get_in(&1, [name, id])
-    get.(tt) || get.(t) || 0
-  end
-
-  # Update tmp tracking. If a function is given, its return value will be used.
-  # As input, the fun gets the current count, using non-tmp tracking if empty.
-  @spec put_tmp_tracking(state, atom, id, non_neg_integer | (non_neg_integer -> non_neg_integer)) ::
-          state
-  def put_tmp_tracking(state, name, id, num_or_fun) when is_function(num_or_fun) do
-    update_in(state, [Access.key(:tmp), :tracking, name, id], fn
-      nil ->
-        num = Map.fetch!(state.tracking, name)[id] || 0
-        num_or_fun.(num)
-
-      num ->
-        num_or_fun.(num)
-    end)
-  end
-
-  def put_tmp_tracking(state, name, id, num_or_fun),
-    do: put_tmp_tracking(state, name, id, fn _ -> num_or_fun end)
-
-  def put_tmp_record(state, name, id, record),
-    do: put_in(state, [Access.key(:tmp), :records, name, id], record)
 
   # Attempt to lift an association directly from its parent.
   @spec assoc_from_record(record, atom) :: record | nil
