@@ -11,7 +11,11 @@ defmodule BlogServer do
     # children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
     fields: [:inserted_at],
     manage_path: [author: @user_preloads, comments: [author: @user_preloads]],
-    # manage_path: [:first_commenter, author: @user_preloads, comments: [author: @user_preloads]],
+    # manage_path: [
+    #   first_commenter: @user_preloads,
+    #   author: @user_preloads,
+    #   comments: [author: @user_preloads]
+    # ],
     query: &Blog.post_with_first_commenter_id_query/1
 
   managed :comments, Comment,
@@ -49,9 +53,27 @@ defmodule BlogServer do
     posts = Blog.all_posts()
     replies = Blog.all_replies(this_blog: true)
 
-    {:ok,
-     init_managed_state()
-     |> warm(:posts, posts)}
+    st = init_managed_state() |> warm(:posts, posts)
+    IO.inspect(get_records(st, :users), label: "recc")
+
+    opts = [preload: __managed__(:posts).manage_path]
+
+    defaults = [
+      order_by: :inserted_at,
+      prepare: &preload(&1, st, opts[:preload] || [])
+    ]
+
+    get_records(st, :flare_pieces)
+    opts = Keyword.merge(defaults, opts)
+
+    page =
+      Indexed.paginate(st.index, :posts, opts)
+      |> IO.inspect(label: "sup")
+
+    {:ok, st}
+    # {:ok,
+    #  init_managed_state()
+    #  |> warm(:posts, posts)}
 
     #  |> warm(:replies, replies, :comment)}
   end
