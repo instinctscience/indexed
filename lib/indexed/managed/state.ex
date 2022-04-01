@@ -106,14 +106,12 @@ defmodule Indexed.Managed.State do
   defp empty_tracking_map(mod), do: Map.new(mod.__tracked__(), &{&1, %{}})
 
   @spec one_rm_queue(t, atom) :: %{id => tuple}
-  def one_rm_queue(state, name) do
-    get_in(state, [Access.key(:tmp), :one_rm_queue, name])
-  end
+  def one_rm_queue(state, name),
+    do: get_in(state, [Access.key(:tmp), :one_rm_queue, name])
 
-  # def add_one_rm_ids(state, name, ids) do
-  #   fun = &Kernel.++(&1, ids)
-  #   update_in(state, [Access.key(:tmp), :one_rm_ids, name], fun)
-  # end
+  @spec one_rm_queue(t, atom, id) :: tuple | nil
+  def one_rm_queue(state, name, id),
+    do: state |> one_rm_queue(name) |> Map.get(id)
 
   @doc "Add a set of records into tmp's `:one_rm_queue`."
   @spec add_one_rm_queue(t, atom, list, %{id => record}) :: t
@@ -125,11 +123,10 @@ defmodule Indexed.Managed.State do
     end)
   end
 
-  # @doc "Reset `:done_ids` inside `:tmp`."
-  # @spec reset_tmp_done_ids(t) :: t
-  # def reset_tmp_done_ids(%{module: mod} = state) do
-  #   put_in(state, [Access.key(:tmp), :done_ids], tracking_keyed_map(mod))
-  # end
+  @spec subtract_one_rm_queue(t, atom, id) :: t
+  def subtract_one_rm_queue(state, name, id) do
+    update_in(state, [Access.key(:tmp), :one_rm_queue, name], &Map.delete(&1, id))
+  end
 
   @doc "Get `ids` list for `name` in tmp's done_ids."
   @spec tmp_done_ids(t, atom, phase) :: [id]

@@ -60,15 +60,15 @@ defmodule Indexed.Managed.Helpers do
   end
 
   # Invoke :subscribe function for the given entity id if one is defined.
-  @spec maybe_subscribe(module, atom, id) :: any
-  def maybe_subscribe(mod, name, id) do
+  @spec subscribe(module, atom, id) :: any
+  def subscribe(mod, name, id) do
     with %{subscribe: sub} when is_function(sub) <- get_managed(mod, name),
          do: sub.(id)
   end
 
   # Invoke :unsubscribe function for the given entity id if one is defined.
-  @spec maybe_unsubscribe(module, atom, id) :: any
-  def maybe_unsubscribe(mod, name, id) do
+  @spec unsubscribe(module, atom, id) :: any
+  def unsubscribe(mod, name, id) do
     with %{unsubscribe: usub} when is_function(usub) <- get_managed(mod, name),
          do: usub.(id)
   end

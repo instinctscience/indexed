@@ -159,16 +159,7 @@ defmodule Indexed.ManagedTest do
   end
 
   test "delete a post" do
-    %{bs_pid: bs_pid} = basic_setup()
-
-    # assert [
-    #          %{
-    #            id: post_id,
-    #            content: "My post is the best.",
-    #            author: %{name: "bob", best_friend: %{name: "lucy"}}
-    #          },
-    #          %{content: "Hello World", author: %{name: "bob"}}
-    #        ] = entries()
+    basic_setup()
 
     assert [
              %{
@@ -186,22 +177,7 @@ defmodule Indexed.ManagedTest do
              }
            ] = entries()
 
-    state(bs_pid).tracking |> IO.inspect(label: "pre tracking")
-
-    entries() |> IO.inspect(label: "EEEEEENNNN")
-
-    IO.inspect(label: "READDDDYYYY")
     Blog.forget_post(post_id)
-
-    state(bs_pid).tracking |> IO.inspect(label: "post tracking")
-
-    records(:flare_pieces) |> IO.inspect(label: "deel")
-
-    state = state(bs_pid)
-
-    records(:users)
-    |> Enum.map(&Indexed.Managed.preload(&1, state, [:best_friend, :flare_pieces]))
-    |> IO.inspect(label: "usej")
 
     assert [
              %{
@@ -220,14 +196,6 @@ defmodule Indexed.ManagedTest do
                ]
              }
            ] = entries()
-
-    # state(bs_pid).tracking
-    # records(:users)
-    entries()
-    |> IO.inspect(label: "deel")
-
-    records(:flare_pieces)
-    |> IO.inspect(label: "flarepie")
   end
 
   @tag :skip
