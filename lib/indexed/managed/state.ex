@@ -14,38 +14,42 @@ defmodule Indexed.Managed.State do
   @typedoc """
   Data structure used to hold temporary data while running `manage/5`.
 
-  * `chopping_block` - Tracked records which are Gg
-  * `:done_ids` - Entity name-keyed map with lists of record IDs which have been
+  * `:done_ids` - ...Entity name-keyed map with lists of record IDs which have been
     processed during the `:add` or `:remove` phases because another entity has
     :one of them. This allows us to skip processing it next time(s) if it
-    appears elsewhere. Only used during a phase -- emptied in between.
+    appears elsewhere. Emptied between phases.
+  * `:one_rm_ids` - ...
+  * `:one_rm_queue` - these ahve already been removed themselves, OR Ocosmething
   * `:records` - Records which may be committed to ETS at the end of the
     operation. Outer map is keyed by entity name. Inner map is keyed by record
     id.
   * `:rm_ids` - Record IDs queued for removal with respect to their parent.
     Outer map is keyed by entity name. Inner map is keyed by parent ID.
     Inner-most map is keyed by parent field containing the children.
-  * `:top_name` - Entity name of the top-level records.
   * `:top_rm_ids` - Top-level record IDs queued for removal.
   * `:tracking` - For record ids relevant to the operation, initial values are
     copied from State and manipulated as needed within this structure.
   """
   @type tmp :: %{
-          chopping_block: %{atom => %{id => record}},
-          done_ids: %{atom => [id]},
+          # done_ids: %{atom => %{id => {rm_phase :: boolean, add_phase :: boolean}}},
+          done_ids: %{atom => %{phase => [id]}},
+          # one_rm_ids: %{atom => [id]},
+          # one_rm_queue: %{atom => %{list => %{id => record}}},
+          one_rm_queue: %{atom => %{id => {list, record}}},
           records: %{atom => %{id => record}},
           rm_ids: %{atom => %{id => %{atom => [id]}}},
-          top_name: atom,
           top_rm_ids: [id],
           tracking: tracking
         }
+
+  @typep phase :: :add | :rm
 
   @typedoc """
   * `:index` - Indexed struct. Static after created via `Indexed.warm/1`.
   * `:module` - Module which has `use Indexed.Managed`.
   * `:repo` - Ecto Repo module to use for loading data.
   * `:tmp` - Data structure used internally during a call to `manage/5`.
-    Usually `nil`.
+    Otherwise `nil`.
   * `:tracking` - Data about how many :one refs there are to a certain entity.
   """
   @type t :: %State{
@@ -75,22 +79,22 @@ defmodule Indexed.Managed.State do
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
   @spec init(module, module) :: t
   def init(mod, repo) do
-    %State{module: mod, repo: repo, tracking: tracking_keyed_map(mod)}
+    %State{module: mod, repo: repo, tracking: empty_tracking_map(mod)}
   end
 
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
-  @spec init_tmp(t, atom) :: t
-  def init_tmp(%{module: mod} = state, name) do
-    empty = tracking_keyed_map(mod)
+  @spec init_tmp(t) :: t
+  def init_tmp(%{module: mod} = state) do
+    empty = empty_tracking_map(mod)
 
     %{
       state
       | tmp: %{
-          chopping_block: empty,
-          done_ids: tracking_keyed_map(mod, []),
+          done_ids: empty,
+          # one_rm_ids: tracking_w_list,
+          one_rm_queue: empty,
           records: empty,
           rm_ids: %{},
-          top_name: name,
           top_rm_ids: [],
           tracking: empty
         }
@@ -98,31 +102,49 @@ defmodule Indexed.Managed.State do
   end
 
   # Make a map of maps keyed by all tracked entity names.
-  @spec tracking_keyed_map(module, any) :: map
-  defp tracking_keyed_map(mod, inner \\ %{}),
-    do: Map.new(mod.__tracked__(), &{&1, inner})
+  @spec empty_tracking_map(module) :: map
+  defp empty_tracking_map(mod), do: Map.new(mod.__tracked__(), &{&1, %{}})
 
-  # def add_tmp_chopping_block(state, module,)
-
-  @doc "Reset `:done_ids` inside `:tmp`."
-  @spec reset_tmp_done_ids(t) :: t
-  def reset_tmp_done_ids(%{module: mod} = state) do
-    put_in(state, [Access.key(:tmp), :done_ids], tracking_keyed_map(mod, []))
+  @spec one_rm_queue(t, atom) :: %{id => tuple}
+  def one_rm_queue(state, name) do
+    get_in(state, [Access.key(:tmp), :one_rm_queue, name])
   end
 
+  # def add_one_rm_ids(state, name, ids) do
+  #   fun = &Kernel.++(&1, ids)
+  #   update_in(state, [Access.key(:tmp), :one_rm_ids, name], fun)
+  # end
+
+  @doc "Add a set of records into tmp's `:one_rm_queue`."
+  @spec add_one_rm_queue(t, atom, list, %{id => record}) :: t
+  def add_one_rm_queue(state, name, sub_path, record_map) do
+    update_in(state, [Access.key(:tmp), :one_rm_queue, name], fn of_entity ->
+      Enum.reduce(record_map, of_entity || %{}, fn {id, rec}, acc ->
+        Map.put(acc, id, {sub_path, rec})
+      end)
+    end)
+  end
+
+  # @doc "Reset `:done_ids` inside `:tmp`."
+  # @spec reset_tmp_done_ids(t) :: t
+  # def reset_tmp_done_ids(%{module: mod} = state) do
+  #   put_in(state, [Access.key(:tmp), :done_ids], tracking_keyed_map(mod))
+  # end
+
   @doc "Get `ids` list for `name` in tmp's done_ids."
-  @spec tmp_done_ids(t, atom) :: [id]
-  def tmp_done_ids(_, _) do
-    # def tmp_done_ids(state, name) do
-    #   get_in(state, [Access.key(:tmp), :done_ids, name]) || []
-    []
+  @spec tmp_done_ids(t, atom, phase) :: [id]
+  def tmp_done_ids(state, name, phase) do
+    get_in(state, [Access.key(:tmp), :done_ids, name, phase]) || []
   end
 
   @doc "Add `ids` list for `name` in tmp's done_ids."
-  @spec add_tmp_done_ids(t, atom, [id]) :: t
-  def add_tmp_done_ids(state, name, ids) do
-    fun = &Kernel.++(&1 || [], ids)
-    update_in(state, [Access.key(:tmp), :done_ids, name], fun)
+  @spec add_tmp_done_ids(t, atom, phase, [id]) :: t
+  def add_tmp_done_ids(state, name, phase, ids) do
+    update_in(state, [Access.key(:tmp), :done_ids, name], fn
+      %{^phase => existing_ids} = map -> Map.put(map, phase, existing_ids ++ ids)
+      %{} = map -> Map.put(map, phase, ids)
+      nil -> %{phase => ids}
+    end)
   end
 
   # Drop from the index all records in
@@ -139,8 +161,8 @@ defmodule Indexed.Managed.State do
   end
 
   # Drop from the index all records in tmp.top_rm_ids.
-  @spec drop_top_rm_ids(t) :: :ok
-  def drop_top_rm_ids(%{tmp: %{top_name: name, top_rm_ids: ids}} = state) do
+  @spec drop_top_rm_ids(t, atom) :: :ok
+  def drop_top_rm_ids(%{tmp: %{top_rm_ids: ids}} = state, name) do
     Enum.each(ids, &Managed.drop(state, name, &1))
   end
 
