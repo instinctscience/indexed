@@ -14,15 +14,21 @@ defmodule Indexed.Managed.State do
   @typedoc """
   Data structure used to hold temporary data while running `manage/5`.
 
-  * `:done_ids` - ...Entity name-keyed map with lists of record IDs which have been
+  * `:done_ids` - Entity name-keyed map with lists of record IDs which have been
     processed during the `:add` or `:remove` phases because another entity has
     :one of them. This allows us to skip processing it next time(s) if it
-    appears elsewhere. Emptied between phases.
-  * `:one_rm_ids` - ...
-  * `:one_rm_queue` - these ahve already been removed themselves, OR Ocosmething
+    appears elsewhere.
+  * `:many_added` - For each `%{entity_name => id}`, a list of :many assoc
+    fields. A field is added here when processing it during the :add phase, and
+    it's used to know whether to skip the field in drop_rm_ids.
+  * `:one_rm_queue` - When a :one association is handled in the :rm phase, a
+    tuple is put here under the parent name and parent id containing the sub
+    path and the record to remove. Removals will occur either immediately
+    preceeding the same parent being processed during the :add phase OR during
+    the finishing step. (But only if no other record has a :many relationship to
+    it still.)
   * `:records` - Records which may be committed to ETS at the end of the
-    operation. Outer map is keyed by entity name. Inner map is keyed by record
-    id.
+    operation. Outer map is keyed by entity name. Inner map is keyed by id.
   * `:rm_ids` - Record IDs queued for removal with respect to their parent.
     Outer map is keyed by entity name. Inner map is keyed by parent ID.
     Inner-most map is keyed by parent field containing the children.
@@ -31,10 +37,8 @@ defmodule Indexed.Managed.State do
     copied from State and manipulated as needed within this structure.
   """
   @type tmp :: %{
-          # done_ids: %{atom => %{id => {rm_phase :: boolean, add_phase :: boolean}}},
           done_ids: %{atom => %{phase => [id]}},
-          # one_rm_ids: %{atom => [id]},
-          # one_rm_queue: %{atom => %{list => %{id => record}}},
+          many_added: %{atom => %{id => [atom]}},
           one_rm_queue: %{atom => %{id => {list, record}}},
           records: %{atom => %{id => record}},
           rm_ids: %{atom => %{id => %{atom => [id]}}},
@@ -91,7 +95,7 @@ defmodule Indexed.Managed.State do
       state
       | tmp: %{
           done_ids: empty,
-          # one_rm_ids: tracking_w_list,
+          many_added: %{},
           one_rm_queue: empty,
           records: empty,
           rm_ids: %{},
@@ -144,14 +148,20 @@ defmodule Indexed.Managed.State do
     end)
   end
 
-  # Drop from the index all records in
+  # Drop from the index all records in rm_ids EXCEPT where
+  # 1. We haven't done the :add phase for the relationship (tmp.many_added) AND
+  # 2. The parent still exists in cache.
   @spec drop_rm_ids(t) :: :ok
   def drop_rm_ids(%{module: mod, tmp: %{rm_ids: rm_ids}} = state) do
     Enum.each(rm_ids, fn {parent_name, map} ->
-      Enum.each(map, fn {_parent_id, map2} ->
+      Enum.each(map, fn {parent_id, map2} ->
         Enum.each(map2, fn {path_entry, ids} ->
           with %{^path_entry => {:many, name, _, _}} <- mod.__managed__(parent_name).children,
-               do: Enum.each(ids, &Managed.drop(state, name, &1))
+               true <-
+                 in_many_added?(state, parent_name, parent_id, path_entry) or
+                   is_nil(Managed.get(state, parent_name, parent_id)) do
+            Enum.each(ids, &Managed.drop(state, name, &1))
+          end
         end)
       end)
     end)
@@ -174,6 +184,19 @@ defmodule Indexed.Managed.State do
 
   def subtract_tmp_rm_id(state, parent_info, id) do
     update_in_tmp_rm_id(state, parent_info, &(&1 -- [id]))
+  end
+
+  # Add an assoc id into tmp.many_added.
+  @spec add_tmp_many_added(t, atom, id, atom) :: t
+  def add_tmp_many_added(state, name, id, field) do
+    k = &Access.key(&1, &2)
+    keys = [k.(:tmp, nil), :many_added, k.(name, %{}), k.(id, [])]
+    update_in(state, keys, &[field | &1])
+  end
+
+  @spec in_many_added?(t, atom, id, atom) :: boolean
+  defp in_many_added?(state, name, id, field) do
+    field in (get_in(state, [Access.key(:tmp), :many_added, name, id]) || [])
   end
 
   # Add an assoc id into tmp.rm_ids.

@@ -4,13 +4,11 @@ defmodule BlogServer do
   use Indexed.Managed, repo: Indexed.Test.Repo
   alias Indexed.Test.Repo
 
-  @user_preloads [:best_friend, :flare_pieces]
+  @user_preloads [:flare_pieces, best_friend: [:best_friend, :flare_pieces]]
 
   managed :posts, Post,
-    # children: [:author, comments: [order_by: :inserted_at]],
     children: [:author, :first_commenter, comments: [order_by: :inserted_at]],
     fields: [:inserted_at],
-    # manage_path: [author: @user_preloads, comments: [author: @user_preloads]],
     manage_path: [
       first_commenter: @user_preloads,
       author: @user_preloads,
@@ -144,7 +142,6 @@ defmodule BlogServer do
       prepare: &preload(&1, state, opts[:preload] || [])
     ]
 
-    get_records(state, :flare_pieces)
     opts = Keyword.merge(defaults, opts)
     page = Indexed.paginate(state.index, :posts, opts)
 

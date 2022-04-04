@@ -655,11 +655,16 @@ defmodule Indexed.Managed do
 
     q = from x in build_query(assoc_managed), where: field(x, ^fkey) in ^ids
     from_db = state.repo.all(q)
-
-    parent_info = &{name, Map.fetch!(&1, fkey), path_entry}
-    fun = &add(&2, parent_info.(&1), assoc_managed, &1)
     assoc_records = assoc_records ++ from_db
-    state = Enum.reduce(assoc_records, state, fun)
+
+    state =
+      Enum.reduce(assoc_records, state, fn assoc, acc ->
+        parent_id = Map.fetch!(assoc, fkey)
+
+        acc
+        |> add({name, parent_id, path_entry}, assoc_managed, assoc)
+        |> State.add_tmp_many_added(name, parent_id, path_entry)
+      end)
 
     do_manage_path(state, assoc_name, :add, assoc_records, sub_path)
   end

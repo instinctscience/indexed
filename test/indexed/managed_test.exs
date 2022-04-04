@@ -7,7 +7,7 @@ defmodule Indexed.ManagedTest do
     :ok
   end
 
-  @user_preload [:best_friend, :flare_pieces]
+  @user_preload [:flare_pieces, :best_friend]
 
   defp preload, do: [:first_commenter, author: @user_preload, comments: [author: @user_preload]]
   defp state(bs_pid), do: :sys.get_state(bs_pid)
@@ -181,7 +181,6 @@ defmodule Indexed.ManagedTest do
 
     assert [
              %{
-               content: "My post is the best.",
                author: %{
                  name: "bob",
                  best_friend: %{name: "lucy"},
@@ -193,7 +192,8 @@ defmodule Indexed.ManagedTest do
                    author: %{name: "jill", flare_pieces: [%{name: "hat"}, %{name: "mitten"}]},
                    content: "wow"
                  }
-               ]
+               ],
+               content: "My post is the best."
              }
            ] = entries()
   end

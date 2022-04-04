@@ -8,7 +8,6 @@ defmodule Indexed do
   @moduledoc """
   Tools for creating an index module.
   """
-  alias Indexed.{Entity, UniquesBundle, View}
   alias __MODULE__
 
   @ets_opts [read_concurrency: true]
@@ -46,7 +45,7 @@ defmodule Indexed do
   * `:index_ref` - ETS table reference for the indexes.
   """
   @type t :: %Indexed{
-          entities: %{optional(atom) => Entity.t()},
+          entities: %{optional(atom) => Indexed.Entity.t()},
           index_ref: :ets.tid()
         }
 
@@ -78,7 +77,7 @@ defmodule Indexed do
   end
 
   @doc "Get an index data structure by key."
-  @spec get_index(Indexed.t(), String.t(), any) :: any
+  @spec get_index(t, String.t(), any) :: any
   def get_index(index, index_key, default \\ nil) do
     case :ets.lookup(index.index_ref, index_key) do
       [{^index_key, val}] -> val
@@ -100,7 +99,7 @@ defmodule Indexed do
   `field_name` under `entity_name` and vals are occurrence counts. Returns
   `nil` if no data is found.
   """
-  @spec get_uniques_map(t, atom, prefilter, atom) :: UniquesBundle.counts_map() | nil
+  @spec get_uniques_map(t, atom, prefilter, atom) :: Indexed.UniquesBundle.counts_map() | nil
   def get_uniques_map(index, entity_name, prefilter, field_name) do
     get_index(index, uniques_map_key(entity_name, prefilter, field_name))
   end
@@ -154,13 +153,13 @@ defmodule Indexed do
   def views_key(entity_name), do: "views_#{entity_name}"
 
   @doc "Get a map of fingerprints to view structs (view metadata)."
-  @spec get_views(t, atom) :: %{View.fingerprint() => View.t()}
+  @spec get_views(t, atom) :: %{Indexed.View.fingerprint() => View.t()}
   def get_views(index, entity_name) do
     get_index(index, views_key(entity_name)) || %{}
   end
 
   @doc "Get a particular view struct (view metadata) by its fingerprint."
-  @spec get_view(t, atom, View.fingerprint()) :: View.t() | nil
+  @spec get_view(t, atom, Indexed.View.fingerprint()) :: View.t() | nil
   def get_view(index, entity_name, fingerprint) do
     with %{} = views <- get_views(index, entity_name) do
       Map.get(views, fingerprint)
