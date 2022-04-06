@@ -88,19 +88,17 @@ defmodule Indexed.Managed.State do
 
   @doc "Returns a freshly initialized state for `Indexed.Managed`."
   @spec init_tmp(t) :: t
-  def init_tmp(%{module: mod} = state) do
-    empty = empty_tracking_map(mod)
-
+  def init_tmp(state) do
     %{
       state
       | tmp: %{
-          done_ids: empty,
+          done_ids: %{},
           many_added: %{},
-          one_rm_queue: empty,
-          records: empty,
+          one_rm_queue: %{},
+          records: %{},
           rm_ids: %{},
           top_rm_ids: [],
-          tracking: empty
+          tracking: %{}
         }
     }
   end
@@ -111,7 +109,7 @@ defmodule Indexed.Managed.State do
 
   @spec one_rm_queue(t, atom) :: %{id => tuple}
   def one_rm_queue(state, name),
-    do: get_in(state, [Access.key(:tmp), :one_rm_queue, name])
+    do: get_in(state, [Access.key(:tmp), :one_rm_queue, name]) || %{}
 
   @spec one_rm_queue(t, atom, id) :: tuple | nil
   def one_rm_queue(state, name, id),
@@ -120,7 +118,7 @@ defmodule Indexed.Managed.State do
   @doc "Add a set of records into tmp's `:one_rm_queue`."
   @spec add_one_rm_queue(t, atom, list, %{id => record}) :: t
   def add_one_rm_queue(state, name, sub_path, record_map) do
-    update_in(state, [Access.key(:tmp), :one_rm_queue, name], fn of_entity ->
+    update_in(state, [Access.key(:tmp), :one_rm_queue, Access.key(name, %{})], fn of_entity ->
       Enum.reduce(record_map, of_entity || %{}, fn {id, rec}, acc ->
         Map.put(acc, id, {sub_path, rec})
       end)
@@ -129,7 +127,8 @@ defmodule Indexed.Managed.State do
 
   @spec subtract_one_rm_queue(t, atom, id) :: t
   def subtract_one_rm_queue(state, name, id) do
-    update_in(state, [Access.key(:tmp), :one_rm_queue, name], &Map.delete(&1, id))
+    keys = [Access.key(:tmp), :one_rm_queue, Access.key(name, %{})]
+    update_in(state, keys, &Map.delete(&1, id))
   end
 
   @doc "Get `ids` list for `name` in tmp's done_ids."
@@ -157,20 +156,29 @@ defmodule Indexed.Managed.State do
       Enum.each(map, fn {parent_id, map2} ->
         Enum.each(map2, fn {path_entry, ids} ->
           with %{^path_entry => {:many, name, _, _}} <- mod.__managed__(parent_name).children,
-               true <-
-                 in_many_added?(state, parent_name, parent_id, path_entry) or
-                   is_nil(Managed.get(state, parent_name, parent_id)) do
+              #  Managed.log({name, ids}, label: "DROPPPP"),
+              #  ima? = in_many_added?(state, parent_name, parent_id, path_entry),
+              #  parent? = is_map(Managed.get(state, parent_name, parent_id)),
+              #  Managed.log({ima?, parent?}, label: "ima?, parent?"),
+              #  true <- ima? or not parent? do
+            #  true <- (ima? and not parent?) or (not ima? and parent?) do
+             true <-
+               in_many_added?(state, parent_name, parent_id, path_entry) or
+                 is_nil(Managed.get(state, parent_name, parent_id)) do
             Enum.each(ids, &Managed.drop(state, name, &1))
           end
         end)
       end)
     end)
+
+    put_in(state, [Access.key(:tmp), :rm_ids], %{})
   end
 
   # Drop from the index all records in tmp.top_rm_ids.
-  @spec drop_top_rm_ids(t, atom) :: :ok
+  @spec drop_top_rm_ids(t, atom) :: t
   def drop_top_rm_ids(%{tmp: %{top_rm_ids: ids}} = state, name) do
     Enum.each(ids, &Managed.drop(state, name, &1))
+    put_in(state, [Access.key(:tmp), :top_rm_ids], [])
   end
 
   # Remove an assoc id from tmp.rm_ids.
@@ -182,8 +190,48 @@ defmodule Indexed.Managed.State do
     end)
   end
 
-  def subtract_tmp_rm_id(state, parent_info, id) do
-    update_in_tmp_rm_id(state, parent_info, &(&1 -- [id]))
+  def subtract_tmp_rm_id(%{tmp: %{rm_ids: rm_ids}} = state, {a, b, c}, id) do
+    k = &Access.key/2
+    keys = [k.(a, %{}), k.(b, %{}), k.(c, [])]
+
+    # Ugly logic to drop empty structures.
+    rm_ids =
+      case update_in(rm_ids, keys, &(&1 -- [id])) do
+        %{^a => %{^b => %{^c => []} = bmap} = amap} = map
+        when 1 == map_size(bmap) and 1 == map_size(amap) and 1 == map_size(map) ->
+          %{}
+
+        %{^a => %{^b => %{^c => []} = bmap} = amap} = map
+        when 1 == map_size(bmap) and 1 == map_size(amap) ->
+          Map.delete(map, a)
+
+        %{^a => %{^b => %{^c => []} = bmap} = amap} = map when 1 == map_size(bmap) ->
+          %{map | a => Map.delete(amap, b)}
+
+        %{^a => %{^b => %{^c => []} = bmap}} = map ->
+          %{map | a => %{b => Map.delete(bmap, c)}}
+
+        map ->
+          map
+      end
+
+    put_in(state, [k.(:tmp, 42), :rm_ids], rm_ids)
+  end
+
+  # Add an assoc id into tmp.rm_ids.
+  @spec add_tmp_rm_id(t, Managed.parent_info(), id) :: t
+  def add_tmp_rm_id(state, :top, id) do
+    update_in(state, [Access.key(:tmp), :top_rm_ids], &[id | &1 || []])
+  end
+
+  def add_tmp_rm_id(state, parent_info, id) do
+    update_in_tmp_rm_id(state, parent_info, &[id | &1 || []])
+  end
+
+  def update_in_tmp_rm_id(state, {a, b, c}, fun) do
+    k = &Access.key/2
+    keys = [k.(:tmp, 42), :rm_ids, k.(a, %{}), k.(b, %{}), k.(c, [])]
+    update_in(state, keys, fun)
   end
 
   # Add an assoc id into tmp.many_added.
@@ -199,23 +247,6 @@ defmodule Indexed.Managed.State do
     field in (get_in(state, [Access.key(:tmp), :many_added, name, id]) || [])
   end
 
-  # Add an assoc id into tmp.rm_ids.
-  @spec add_tmp_rm_id(t, Managed.parent_info(), id) :: t
-  def add_tmp_rm_id(state, :top, id) do
-    update_in(state, [Access.key(:tmp), :top_rm_ids], &[id | &1 || []])
-  end
-
-  def add_tmp_rm_id(state, parent_info, id) do
-    update_in_tmp_rm_id(state, parent_info, &[id | &1 || []])
-  end
-
-  def update_in_tmp_rm_id(state, {a, b, c}, fun) do
-    m = &Access.key(&1, %{})
-    keys = [m.(a), m.(b), Access.key(c, [])]
-    rm_ids = update_in(state.tmp.rm_ids, keys, fun)
-    put_in(state, [Access.key(:tmp), :rm_ids], rm_ids)
-  end
-
   # Get the tracking (number of references) for the given entity and id.
   @spec tracking(t, atom, any) :: non_neg_integer
   def tracking(%{tracking: tracking}, name, id),
@@ -228,11 +259,17 @@ defmodule Indexed.Managed.State do
     get.(tt) || get.(t) || 0
   end
 
+  @doc "Reset tmp tracking map."
+  @spec clear_tmp_tracking(t) :: t
+  def clear_tmp_tracking(state) do
+    put_in(state, [Access.key(:tmp), :tracking], %{})
+  end
+
   # Update tmp tracking. If a function is given, its return value will be used.
   # As input, the fun gets the current count, using non-tmp tracking if empty.
   @spec put_tmp_tracking(t, atom, id, non_neg_integer | (non_neg_integer -> non_neg_integer)) :: t
   def put_tmp_tracking(state, name, id, num_or_fun) when is_function(num_or_fun) do
-    update_in(state, [Access.key(:tmp), :tracking, name, id], fn
+    update_in(state, [Access.key(:tmp), :tracking, Access.key(name, %{}), id], fn
       nil ->
         num = Map.fetch!(state.tracking, name)[id] || 0
         num_or_fun.(num)
@@ -246,5 +283,5 @@ defmodule Indexed.Managed.State do
     do: put_tmp_tracking(state, name, id, fn _ -> num_or_fun end)
 
   def put_tmp_record(state, name, id, record),
-    do: put_in(state, [Access.key(:tmp), :records, name, id], record)
+    do: put_in(state, [Access.key(:tmp), :records, Access.key(name, %{}), id], record)
 end

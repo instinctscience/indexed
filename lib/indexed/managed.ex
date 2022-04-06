@@ -370,7 +370,7 @@ defmodule Indexed.Managed do
           state_or_wrapped,
           managed_or_name,
           :insert | :update | :delete | id | record_or_list,
-          record_or_list,
+          id | record_or_list,
           path
         ) ::
           state_or_wrapped
@@ -411,7 +411,7 @@ defmodule Indexed.Managed do
           atom,
           id_key,
           :insert | :update | :delete | id | record_or_list,
-          record_or_list
+          id | record_or_list
         ) :: {[record], [record]}
   defp orig_and_new(state, name, id_key, orig, new) do
     id = &id(&1, id_key)
@@ -442,16 +442,17 @@ defmodule Indexed.Managed do
   defp do_manage_finish(%{module: mod} = state, top_name) do
     trk = Access.key(:tracking)
     put_tracking = &put_in(&1, [trk, &2, &3], &4)
+    update_tracking = &update_in(&1, [trk, &2], &3)
     get_tmp_record = &get_in(state.tmp.records, [&1, &2])
 
     maybe_manage_rm = fn st, name, id ->
       case has_referring_many?(st, name, id) || State.one_rm_queue(st, name, id) do
-        true ->
+        x when x in [true, nil] ->
           st
 
         {spath, rec} ->
           drop(st, name, id)
-          do_manage_path(st, name, :rm, [rec], spath, true)
+          do_manage_path(st, name, :rm, [rec], spath)
       end
     end
 
@@ -468,7 +469,7 @@ defmodule Indexed.Managed do
       st, name, id, _orig_c, 0 ->
         unsubscribe(mod, name, id)
         st = maybe_manage_rm.(st, name, id)
-        update_in(st, [trk, name], &Map.delete(&1, id))
+        update_tracking.(st, name, &Map.delete(&1, id))
 
       # Had 1+, still have 1+. If new record isn't in tmp, it is unchanged.
       st, name, id, _orig_c, new_c ->
@@ -477,18 +478,26 @@ defmodule Indexed.Managed do
         put_tracking.(st, name, id, new_c)
     end
 
-    state =
-      Enum.reduce(state.tmp.tracking, state, fn {name, map}, acc ->
+    process_tmp_tracking = fn %{tmp: %{tracking: tmp_tracking}} = state ->
+      Enum.reduce(tmp_tracking, State.clear_tmp_tracking(state), fn {name, map}, acc ->
         Enum.reduce(map, acc, fn {id, new_count}, acc2 ->
           orig_count = State.tracking(state, name, id)
           handle.(acc2, name, id, orig_count, new_count)
         end)
       end)
+    end
 
-    State.drop_top_rm_ids(state, top_name)
-    State.drop_rm_ids(state)
+    Enum.reduce_while(1..100, State.drop_top_rm_ids(state, top_name), fn
+      _, %{tmp: %{rm_ids: rm_ids, tracking: tt}} = acc
+      when 0 == map_size(rm_ids) and 0 == map_size(tt) ->
+        {:halt, acc}
 
-    state
+      _, %{tmp: %{tracking: tt}} = acc when 0 < map_size(tt) ->
+        {:cont, process_tmp_tracking.(acc)}
+
+      _, acc ->
+        {:cont, State.drop_rm_ids(acc)}
+    end)
   end
 
   # Remove a record according to its managed config and association to parent:
@@ -541,19 +550,19 @@ defmodule Indexed.Managed do
   end
 
   # Handle managing associations according to path but not records themselves.
-  @spec do_manage_path(state, atom, add_or_rm, [record], keyword, boolean) :: state
-  defp do_manage_path(state, name, action, records, path, execute? \\ false) do
+  @spec do_manage_path(state, atom, add_or_rm, [record], keyword) :: state
+  defp do_manage_path(state, name, action, records, path) do
     Enum.reduce(path, state, fn {path_entry, sub_path}, acc ->
       %{children: children} = get_managed(acc.module, name)
       spec = Map.fetch!(children, path_entry)
 
-      do_manage_assoc(acc, name, path_entry, spec, action, records, sub_path, execute?)
+      do_manage_assoc(acc, name, path_entry, spec, action, records, sub_path)
     end)
   end
 
   # Manage a single association across a set of (parent) records.
   # Then recursively handle associations according to sub_path therein.
-  @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword, boolean) ::
+  @spec do_manage_assoc(state, atom, atom, assoc_spec, add_or_rm, [record], keyword) ::
           state
   # *** ONE ADD - these records have a `belongs_to :assoc_name` association.
   defp do_manage_assoc(
@@ -563,8 +572,7 @@ defmodule Indexed.Managed do
          {:one, assoc_name, fkey},
          :add,
          records,
-         sub_path,
-         _
+         sub_path
        ) do
     %{id_key: assoc_id_key} = assoc_managed = get_managed(state, assoc_name)
 
@@ -633,8 +641,7 @@ defmodule Indexed.Managed do
          {:many, assoc_name, fkey, _},
          :add,
          records,
-         sub_path,
-         _
+         sub_path
        ) do
     %{id_key: id_key, module: entity_mod} = get_managed(state.module, name)
     assoc_managed = get_managed(state.module, assoc_name)
@@ -677,8 +684,7 @@ defmodule Indexed.Managed do
          {:one, assoc_name, fkey},
          :rm,
          records,
-         sub_path,
-         execute?
+         sub_path
        ) do
     assoc_managed = get_managed(state, assoc_name)
     done_ids = State.tmp_done_ids(state, assoc_name, :rm)
@@ -702,13 +708,9 @@ defmodule Indexed.Managed do
         end
       end)
 
-    if execute? do
-      do_manage_path(state, assoc_name, :rm, Map.values(assoc_doing_map), sub_path)
-    else
-      state
-      |> State.add_tmp_done_ids(assoc_name, :rm, assoc_doing_ids)
-      |> State.add_one_rm_queue(assoc_name, sub_path, assoc_doing_map)
-    end
+    state
+    |> State.add_tmp_done_ids(assoc_name, :rm, assoc_doing_ids)
+    |> State.add_one_rm_queue(assoc_name, sub_path, assoc_doing_map)
   end
 
   # *** MANY RM - these records have a `has_many :assoc_name` association.
@@ -719,8 +721,7 @@ defmodule Indexed.Managed do
          {:many, assoc_name, fkey, _},
          :rm,
          records,
-         sub_path,
-         _
+         sub_path
        ) do
     %{id_key: id_key, module: module} = get_managed(state.module, name)
     assoc_managed = get_managed(state.module, assoc_name)
