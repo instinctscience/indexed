@@ -143,7 +143,7 @@ defmodule Indexed.Managed.Prepare do
       #   Enum.find(managed, &(&1.module == related_mod)) ||
       #     raise("#{inspect(related_mod)} must be tracked #{inf}.")
 
-      #   Helpers.preload_fn(normalize_spec(assoc_spec |> IO.inspect(label: "ho")) |> IO.inspect(label: "hey"), repo) ||
+      #   Helpers.preload_fn(normalize_spec(assoc_spec), repo) ||
       #     raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"
       # end
     end

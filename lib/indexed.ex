@@ -8,6 +8,7 @@ defmodule Indexed do
   @moduledoc """
   Tools for creating an index module.
   """
+  alias Indexed.View
   alias __MODULE__
 
   @ets_opts [read_concurrency: true]
@@ -153,13 +154,13 @@ defmodule Indexed do
   def views_key(entity_name), do: "views_#{entity_name}"
 
   @doc "Get a map of fingerprints to view structs (view metadata)."
-  @spec get_views(t, atom) :: %{Indexed.View.fingerprint() => View.t()}
+  @spec get_views(t, atom) :: %{View.fingerprint() => View.t()}
   def get_views(index, entity_name) do
     get_index(index, views_key(entity_name)) || %{}
   end
 
   @doc "Get a particular view struct (view metadata) by its fingerprint."
-  @spec get_view(t, atom, Indexed.View.fingerprint()) :: View.t() | nil
+  @spec get_view(t, atom, View.fingerprint()) :: View.t() | nil
   def get_view(index, entity_name, fingerprint) do
     with %{} = views <- get_views(index, entity_name) do
       Map.get(views, fingerprint)

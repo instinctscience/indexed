@@ -440,9 +440,6 @@ defmodule Indexed.Managed do
 
   @spec do_manage_finish(state, atom) :: state
   defp do_manage_finish(%{module: mod} = state, top_name) do
-    trk = Access.key(:tracking)
-    put_tracking = &put_in(&1, [trk, &2, &3], &4)
-    update_tracking = &update_in(&1, [trk, &2], &3)
     get_tmp_record = &get_in(state.tmp.records, [&1, &2])
 
     maybe_manage_rm = fn st, name, id ->
@@ -463,19 +460,19 @@ defmodule Indexed.Managed do
       st, name, id, 0, new_c when new_c > 0 ->
         subscribe(mod, name, id)
         put(st, name, get_tmp_record.(name, id))
-        put_tracking.(st, name, id, new_c)
+        State.put_tracking(st, name, id, new_c)
 
       # Had 1+ references, now have 0.
       st, name, id, _orig_c, 0 ->
         unsubscribe(mod, name, id)
         st = maybe_manage_rm.(st, name, id)
-        update_tracking.(st, name, &Map.delete(&1, id))
+        State.delete_tracking(st, name, id)
 
       # Had 1+, still have 1+. If new record isn't in tmp, it is unchanged.
       st, name, id, _orig_c, new_c ->
         tmp_rec = get_tmp_record.(name, id)
         if tmp_rec, do: put(st, name, tmp_rec)
-        put_tracking.(st, name, id, new_c)
+        State.put_tracking(st, name, id, new_c)
     end
 
     process_tmp_tracking = fn %{tmp: %{tracking: tmp_tracking}} = state ->
@@ -492,7 +489,8 @@ defmodule Indexed.Managed do
       when 0 == map_size(rm_ids) and 0 == map_size(tt) ->
         {:halt, acc}
 
-      _, %{tmp: %{tracking: tt}} = acc when 0 < map_size(tt) ->
+      _, %{tmp: %{tracking: tt}} = acc
+      when 0 < map_size(tt) ->
         {:cont, process_tmp_tracking.(acc)}
 
       _, acc ->
@@ -518,8 +516,7 @@ defmodule Indexed.Managed do
         State.add_tmp_rm_id(state, parent_info, id)
 
       {cur, _} when cur > 0 ->
-        state = State.put_tmp_tracking(state, name, id, cur - 1)
-        state
+        State.put_tmp_tracking(state, name, id, cur - 1)
     end
   end
 

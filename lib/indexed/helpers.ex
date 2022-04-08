@@ -9,7 +9,7 @@ defmodule Indexed.Helpers do
   @spec id(map, any) :: any
   def id(record, id_key) when is_function(id_key), do: id_key.(record)
   def id(record, {mod, fun}), do: apply(mod, fun, [record])
-  def id(nil, record), do: raise("No id_key found for #{inspect(record)}")
+  def id(record, nil), do: raise("No id_key found for #{inspect(record)}")
   def id(record, id_key), do: Map.get(record, id_key)
 
   @doc """

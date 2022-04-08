@@ -7,7 +7,7 @@ defmodule Indexed.ManagedTest do
     :ok
   end
 
-  @user_preload [:flare_pieces, :best_friend]
+  @user_preload [:flare_pieces, best_friend: :best_friend]
 
   defp preload, do: [:first_commenter, author: @user_preload, comments: [author: @user_preload]]
   defp state(bs_pid), do: :sys.get_state(bs_pid)
@@ -62,7 +62,12 @@ defmodule Indexed.ManagedTest do
     assert [
              %{
                content: "My post is the best.",
-               author: %{name: "fred", flare_pieces: [%{id: pin_id, name: "pin"}]} = bob,
+               author:
+                 %{
+                   name: "fred",
+                   best_friend: %{name: "lucy"},
+                   flare_pieces: [%{id: pin_id, name: "pin"}]
+                 } = bob,
                comments: [
                  %{
                    content: "woah",
@@ -194,6 +199,37 @@ defmodule Indexed.ManagedTest do
                  }
                ],
                content: "My post is the best."
+             }
+           ] = entries()
+  end
+
+  test "Nesty McNesterson" do
+    {:ok, %{id: bob_id} = bob} = Blog.create_user("bob", ["pin"])
+    {:ok, %{id: lucy_id} = lucy} = Blog.create_user("lucy")
+
+    Repo.insert!(%Post{
+      author_id: bob_id,
+      content: "Ya",
+      comments: [%{content: "yo", author_id: bob_id}]
+    })
+
+    start_supervised!(BlogServer.child_spec())
+
+    {:ok, %{id: mar_id}} = Blog.create_user("mar")
+    {:ok, _} = Blog.update_user(bob, %{best_friend_id: lucy_id})
+    {:ok, _} = Blog.update_user(lucy, %{best_friend_id: mar_id})
+
+    [%{id: post_id, content: "Ya"}] = entries()
+    {:ok, _} = Blog.update_post(post_id, content: "hey")
+
+    assert [
+             %{
+               content: "hey",
+               author: %{
+                 name: "bob",
+                 best_friend: %{name: "lucy", best_friend: %{name: "mar"}}
+               },
+               comments: [%{author: %{best_friend: %{best_friend: %{name: "mar"}}}}]
              }
            ] = entries()
   end
