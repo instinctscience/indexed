@@ -3,7 +3,6 @@ defmodule Indexed.Managed.Prepare do
   Some tools for preparation and data normalization.
   """
   alias Indexed.{Entity, Managed}
-  # alias Indexed.Managed.Helpers
 
   @doc """
   Make some automatic adjustments to the manageds list:
@@ -123,29 +122,7 @@ defmodule Indexed.Managed.Prepare do
         do: raise("Must have both :subscribe and :unsubscribe or neither #{inf}.")
 
       function_exported?(module, :__schema__, 1) ||
-        raise "#{inspect(module)} should be a schema module #{inf}"
-
-      # for {key, assoc_spec} <- children do
-      #   related_mod =
-      #     case assoc_spec do
-      #       field when is_atom(field) ->
-      #         case module.__schema__(:association, key) do
-      #           %{related: r} -> r
-      #           nil -> raise "Expected association #{key} on #{inspect(module)}."
-      #         end
-
-      #       {field, opts} ->
-
-      #       spec ->
-      #         Enum.find(managed, &(&1.name == elem(spec, 1))).module
-      #     end
-
-      #   Enum.find(managed, &(&1.module == related_mod)) ||
-      #     raise("#{inspect(related_mod)} must be tracked #{inf}.")
-
-      #   Helpers.preload_fn(normalize_spec(assoc_spec), repo) ||
-      #     raise "Invalid preload spec: #{inspect(assoc_spec)} #{inf}"
-      # end
+        raise "#{inspect(module)} should be an Ecto.Schema module #{inf}"
     end
 
     :ok

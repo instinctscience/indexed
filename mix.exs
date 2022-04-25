@@ -2,7 +2,7 @@ defmodule Indexed.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/instinctscience/indexed"
-  @version "0.1.1"
+  @version "0.0.1"
 
   def project do
     [
@@ -53,12 +53,11 @@ defmodule Indexed.MixProject do
     [
       {:credo, "~> 1.5", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
-      {:ecto_sql, "~> 3.3"},
+      {:ecto_sql, "~> 3.3", optional: true},
       {:excoveralls, "~> 0.14", only: :test},
       {:ex_doc, "~> 0.23", only: :dev, runtime: false},
-      {:mix_test_watch, "~> 1.0", only: :dev, runtime: false},
       {:paginator, "~> 1.0"},
-      {:phoenix_pubsub, "~> 2.0"},
+      {:phoenix_pubsub, "~> 2.0", optional: true},
       {:postgrex, "~> 0.15", only: [:test]}
     ]
   end
